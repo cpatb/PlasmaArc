@@ -6,3 +6,12 @@ __pycache__/
 .eggs/
 dist/
 build/
+
+# LaTeX build artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc

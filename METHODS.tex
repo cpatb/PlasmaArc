@@ -1,0 +1,815 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{siunitx}
+\usepackage{cleveref}
+
+% ---------------------------------------------------------------------------
+\title{\textbf{Methods: High-Speed Imaging Analysis of\\Plasma Arc Dynamics}}
+\author{}
+\date{\today}
+% ---------------------------------------------------------------------------
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ===========================================================================
+\section{Experimental Setup and Data Acquisition}
+\label{sec:setup}
+% ===========================================================================
+
+Three replicate recordings of a nitrogen plasma arc discharge were captured
+using a high-speed camera operating at $f_s = \SI{200000}{frames\per\second}$
+(200\,kfps). The discharge was sustained through a \SI{0.8}{mm} nozzle with a
+nitrogen flow rate of \SI{1000}{mL\per\min}. Each recording was stored as a
+multi-page TIFF file with 16-bit grayscale pixel values:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+File & Stem & Frames \\
+\midrule
+\texttt{ADCB\_0.8mmNoz\_1000mL\_N2\_1.tiff} & Run~1 & ${\sim}$28\,000 \\
+\texttt{ADCB\_0.8mmNoz\_1000mL\_N2\_2.tiff} & Run~2 & ${\sim}$28\,000 \\
+\texttt{ADCB\_0.8mmNoz\_1000mL\_N2\_3.tiff} & Run~3 & ${\sim}$28\,000 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The inter-frame interval is therefore $\Delta t = 1/f_s = \SI{5}{\micro\second}$.
+All three runs share identical experimental conditions; independent analysis of
+each run provides an internal reproducibility check.
+
+% ===========================================================================
+\section{Spatial Calibration}
+\label{sec:calibration}
+% ===========================================================================
+
+A ground-truth length standard of $L_{\text{ref}} = \SI{2.4}{mm}$ was imaged
+under identical optical conditions and measured to span $p_{\text{ref}} = 22$
+pixels. The spatial calibration factor is:
+%
+\begin{equation}
+  s = \frac{p_{\text{ref}}}{L_{\text{ref}}} = \frac{22\,\text{px}}{2.4\,\text{mm}}
+    = 9.167\,\text{px\,mm}^{-1}.
+  \label{eq:calibration}
+\end{equation}
+%
+All pixel distances reported throughout this work are converted to physical units
+using \cref{eq:calibration}.
+
+% ===========================================================================
+\section{Image Preprocessing}
+\label{sec:preprocessing}
+% ===========================================================================
+
+\subsection{Dark-Frame Rejection}
+\label{sec:dark}
+
+Frames in which no discharge is present are characterised by very low pixel
+values. A frame is rejected as dark if
+%
+\begin{equation}
+  \max_{(x,y)} I(x,y) < \theta_{\text{dark}} = 35\,\text{DN},
+\end{equation}
+%
+where $I(x,y)$ denotes the raw 16-bit intensity at pixel $(x,y)$ and DN stands
+for digital numbers. This guard prevents subsequent processing steps from
+operating on frames that contain only sensor noise.
+
+\subsection{Frame Timestamp}
+\label{sec:timestamp}
+
+Each frame is assigned a physical timestamp from its zero-based index $n$:
+%
+\begin{equation}
+  t_n = \frac{n}{f_s} \quad [\text{s}],
+  \label{eq:timestamp}
+\end{equation}
+%
+and stored alongside measurements as \texttt{time\_s}. All time axes in
+downstream figures use this derived timestamp; no hardware trigger signal is
+required.
+
+\subsection{Per-Frame Intensity Normalisation}
+\label{sec:norm}
+
+Each frame that passes the dark-frame guard is normalised to a floating-point
+image $\hat{I} \in [0,1]$:
+%
+\begin{equation}
+  \hat{I}(x,y) = \frac{I(x,y) - I_{\min}}{I_{\max} - I_{\min}},
+  \label{eq:normalise}
+\end{equation}
+%
+where $I_{\min}$ and $I_{\max}$ are the minimum and maximum pixel values
+within the current frame. This per-frame normalisation is critical because
+it renders the subsequent thresholding step independent of absolute
+illumination level, which can vary substantially between discharges and
+across the recording.
+
+% ===========================================================================
+\section{Arc Detection and Binarisation}
+\label{sec:binarise}
+% ===========================================================================
+
+\subsection{Adaptive Otsu Thresholding}
+\label{sec:otsu}
+
+The arc occupies a small, bright region against a dark background. A na\"ive
+Otsu threshold applied to all pixels is biased toward the background intensity
+peak and systematically underestimates the correct threshold. Instead, Otsu's
+method \cite{otsu1979threshold} is applied only to the subset of pixels whose
+normalised intensity exceeds the per-frame median:
+%
+\begin{equation}
+  \mathcal{P}_{\text{bright}} = \bigl\{ \hat{I}(x,y)
+    : \hat{I}(x,y) > P_{50}(\hat{I}) \bigr\},
+  \quad
+  \theta^* = \mathrm{Otsu}\!\left(\mathcal{P}_{\text{bright}}\right).
+  \label{eq:otsu}
+\end{equation}
+%
+The binary image is then
+%
+\begin{equation}
+  B(x,y) = \begin{cases} 1 & \text{if } \hat{I}(x,y) > \theta^*, \\
+                          0 & \text{otherwise.} \end{cases}
+\end{equation}
+
+\subsection{Morphological Cleanup}
+\label{sec:morph}
+
+$B(x,y)$ is refined by binary closing with a disk-shaped structuring element
+of radius $r_c = 3$\,px:
+%
+\begin{equation}
+  B_c = B \bullet \mathcal{D}(r_c),
+\end{equation}
+%
+where $\bullet$ denotes the morphological closing operator and
+$\mathcal{D}(r)$ is a disk of radius $r$. Closing bridges small gaps that
+arise from intensity fluctuations within the arc column, producing a more
+connected mask without expanding its outer boundary significantly.
+
+Binary opening with a disk of radius $r_o = 2$\,px is applied subsequently
+to remove thin protrusions and isolated noise pixels that survive closing:
+%
+\begin{equation}
+  B_{co} = B_c \circ \mathcal{D}(r_o),
+\end{equation}
+%
+where $\circ$ denotes the morphological opening operator. Opening erodes
+then dilates, eliminating small spurs and noise blobs while preserving
+the gross shape of the arc column. The refined mask $B_{co}$ is passed to the
+connected-component stage.
+
+\subsection{Largest-Component Selection and Area Filtering}
+\label{sec:component}
+
+Connected-component labelling is applied to $B_c$. Only the largest connected
+component $\mathcal{M}$ is retained:
+%
+\begin{equation}
+  \mathcal{M} = \operatorname*{arg\,max}_{C \in \mathrm{CC}(B_c)} |C|,
+\end{equation}
+%
+where $|C|$ denotes the number of pixels in component $C$. If the area of
+$\mathcal{M}$ falls outside the interval $[A_{\min}, A_{\max}]$ the frame is
+classified as non-detected:
+%
+\begin{equation}
+  A_{\min} = 5\,\text{px}, \qquad A_{\max} = 3000\,\text{px}.
+\end{equation}
+%
+The lower bound rejects single-pixel noise; the upper bound rejects frames
+where a saturated electrode flash fills the entire frame.
+
+% ===========================================================================
+\section{Per-Frame Geometric Measurements}
+\label{sec:geometry}
+% ===========================================================================
+
+The following quantities are extracted from $\mathcal{M}$ for each detected
+frame.
+
+\subsection{Arc Tip Position}
+\label{sec:tip}
+
+The arc tip is defined as the bottommost pixel of the arc mask (i.e., the
+pixel with the largest row index, corresponding to the greatest depth below
+the electrode gap):
+%
+\begin{equation}
+  r_{\text{tip}} = \max\{r : \exists\, c \text{ s.t. } (r,c) \in \mathcal{M}\},
+  \quad
+  c_{\text{tip}} = \operatorname*{arg\,max}_{c} \{(r_{\text{tip}},c) \in \mathcal{M}\}.
+  \label{eq:tip}
+\end{equation}
+%
+The tip position tracks the leading edge of the arc as it propagates away from
+the electrode gap.
+
+\subsection{Arc Length and Width}
+\label{sec:dimensions}
+
+Arc length $\ell$ is measured along the medial axis (skeleton) of $\mathcal{M}$
+and converted to millimetres via the calibration factor $s$. Arc width $w$ is
+estimated by sampling the perpendicular extent of the mask at uniformly spaced
+positions along the skeleton.
+
+\subsection{Centroid and Bounding Box}
+\label{sec:centroid}
+
+The centroid $(\bar{r}, \bar{c})$ and axis-aligned bounding box
+$(r_0, c_0, r_1, c_1)$ are computed directly from the pixel set $\mathcal{M}$.
+
+\subsection{Mean Intensity}
+\label{sec:intensity}
+
+The mean normalised intensity over the arc mask pixels is
+%
+\begin{equation}
+  \bar{I}_{\mathcal{M}} = \frac{1}{|\mathcal{M}|}
+    \sum_{(x,y) \in \mathcal{M}} \hat{I}(x,y),
+  \label{eq:intensity}
+\end{equation}
+%
+where $|\mathcal{M}|$ is the number of pixels in the arc mask. This quantity
+is stored as \texttt{mean\_intensity} in the output CSV and serves as a
+frame-level proxy for arc luminosity, normalised by arc size so that it does
+not co-vary with arc area.
+
+\subsection{Electrode Gap and Arc Completeness}
+\label{sec:completeness}
+
+The two electrode tips (tip~A and tip~B) are detected independently as the
+two outermost endpoints of the arc skeleton. The electrode gap is
+$g = \|(\mathbf{t}_A - \mathbf{t}_B)\|_2$ in pixels. An arc is classified as
+\emph{complete} (bridging) if the horizontal separation of the two endpoints
+exceeds the vertical separation, which geometrically distinguishes a bridging
+arc spanning the full electrode gap from a partial leader or streamer extending
+from a single electrode:
+%
+\begin{equation}
+  \text{arc\_complete} = \begin{cases}
+    \text{True}  & |c_A - c_B| > |r_A - r_B|, \\
+    \text{False} & \text{otherwise.}
+  \end{cases}
+  \label{eq:complete}
+\end{equation}
+
+\subsection{Flash-Frame Classification and Exclusion}
+\label{sec:flash}
+
+During the discharge cycle, frames occasionally occur in which a saturated
+electrode flash temporarily illuminates the entire field of view. These frames
+pass the dark-frame guard and the arc-area bounds but do not represent
+genuine arc propagation; including them in velocity or length analyses would
+produce severe measurement artefacts.
+
+A frame is classified as a \emph{flash frame} if it satisfies both:
+%
+\begin{equation}
+  r_0^{\text{bbox}} < 5\,\text{px}
+  \quad \text{and} \quad
+  A_{\mathcal{M}} > 400\,\text{px},
+  \label{eq:flash}
+\end{equation}
+%
+where $r_0^{\text{bbox}}$ is the topmost row of the bounding box of
+$\mathcal{M}$ (i.e.\ the arc mask reaches very close to the top of the
+frame) and $A_{\mathcal{M}} = |\mathcal{M}|$ is the mask area. The
+combination of a near-top bounding box and large area reliably distinguishes
+electrode flashes—which produce bright, spatially extensive detections
+anchored near the electrode region—from genuine arcs. Flash frames are
+recorded in the output CSV with the flag \texttt{is\_flash = True} and are
+excluded from all downstream analyses, including event segmentation, velocity
+regression, velocity mapping, and spectral analysis.
+
+% ===========================================================================
+\section{Discharge Event Identification}
+\label{sec:events}
+% ===========================================================================
+
+Individual plasma discharge pulses—``primary events''—are resolved from the
+continuous detection sequence using a physics-based, data-driven spatial
+criterion grounded in the gliding arc discharge cycle.
+
+\subsection{Primary Event Boundaries}
+\label{sec:primary}
+
+In a gliding arc discharge the arc nucleates at the electrode gap (the point
+of minimum electrode separation), propagates downstream under the influence of
+the gas flow, reaches maximum extension, extinguishes, and re-nucleates at the
+gap~\cite{fridman2005}. A primary event boundary is therefore declared when
+the arc tip returns to the \emph{nucleation zone} near the electrode gap, not
+merely on any retreat from the running maximum.
+
+The electrode-gap row $r_{\text{elec}}$ is estimated from the data as the 5th
+percentile of $r_{\text{tip}}$ over frames labelled \texttt{arc\_complete}
+(i.e.\ frames where the arc bridges both electrodes):
+%
+\begin{equation}
+  r_{\text{elec}} = P_{5}\!\bigl(\{r_{\text{tip}}(t) : \texttt{arc\_complete}(t) = 1\}\bigr).
+  \label{eq:electrode_row}
+\end{equation}
+%
+This estimate is robust to the fact that not every nucleation frame is
+classified as a complete arc; it uses the lowest positions observed during
+bridging to locate the electrode level. If fewer than 20 complete-arc frames
+are available for a run, the 5th percentile over all detected frames is used
+as a fallback.
+
+The typical maximum arc extension $r_{\text{max}}^{90}$ is taken as the
+90th percentile of $r_{\text{tip}}$ over all detected frames, giving the
+full arc range
+%
+\begin{equation}
+  \Delta r_{\text{full}} = r_{\text{max}}^{90} - r_{\text{elec}}.
+\end{equation}
+%
+A new primary event is declared when the arc tip falls within a fractional
+slack of the electrode row:
+%
+\begin{equation}
+  \text{new primary event at } t \iff
+  r_{\text{tip}}(t) \;\leq\; r_{\text{elec}}
+  + \alpha_{\text{nuc}} \cdot \Delta r_{\text{full}},
+  \label{eq:primary_reset}
+\end{equation}
+%
+where $\alpha_{\text{nuc}} = 0.15$ (15\% of the full arc range). Because the
+threshold $r_{\text{elec}} + \alpha_{\text{nuc}} \cdot \Delta r_{\text{full}}$
+is derived from the measured arc range in each recording, no pixel value is
+hard-coded; the criterion adapts automatically to the geometry of each run.
+
+A new primary event is also forced unconditionally when there is a detection
+dropout of more than $\Delta t_{\max} = 500$\,frames
+($\SI{2.5}{ms}$ at $\SI{200}{kfps}$), covering cases where the arc
+extinguishes and the camera sees no arc signal for an extended period.
+
+\subsection{Sub-Event Detection}
+\label{sec:subevents}
+
+Within a primary discharge cycle, the arc can undergo intermediate retreats
+without returning to the electrode gap. These correspond to partial
+re-ignition or re-attachment events described in the gliding arc
+literature~\cite{fridman2005,gangoli2007}: the arc column partially collapses
+and re-ignites at an intermediate position, producing a shorter secondary
+stroke before the full cycle continues. Such intermediate strokes are termed
+\emph{sub-events}.
+
+A sub-event boundary is declared when, within a primary event, the arc tip
+retreats by more than a fraction $\alpha_{\text{sub}}$ of the current arc
+extension from the electrode level:
+%
+\begin{equation}
+  \text{sub-event at } t \iff
+  r_{\max}^{\text{event}}(t) - r_{\text{tip}}(t)
+  \;>\; \alpha_{\text{sub}} \cdot \bigl(r_{\max}^{\text{event}}(t) - r_{\text{elec}}\bigr),
+  \label{eq:subevent}
+\end{equation}
+%
+with $\alpha_{\text{sub}} = 0.50$. Each frame is therefore labelled with a
+primary \texttt{event\_id} and a secondary \texttt{sub\_event\_id} (0 for the
+first stroke within an event, incrementing on each detected sub-event
+boundary). The number of sub-events per primary event is recorded in
+\texttt{event\_summary.csv} as \texttt{sub\_event\_count}.
+
+Sub-events are identified and stored for completeness but are not used in the
+primary velocity regression (Section~\ref{sec:regression}), which operates on
+the full advancing-front envelope of each primary event.
+
+% ===========================================================================
+\section{Velocity Analysis}
+\label{sec:velocity}
+% ===========================================================================
+
+\subsection{Advancing-Front Filter}
+\label{sec:front}
+
+Within each discharge event the arc tip does not monotonically advance:
+transient retreats (tip moving back toward the electrodes) occur due to arc
+instabilities and re-attachment. Including retreat frames in a velocity
+estimate conflates forward propagation with oscillatory motion. To isolate the
+genuine forward propagation speed, only frames in which the tip is at a new
+maximum depth are retained:
+%
+\begin{equation}
+  \mathcal{F} = \bigl\{ t \in \text{event} :
+    r_{\text{tip}}(t) \geq \max_{\tau < t,\,\tau \in \mathcal{F}} r_{\text{tip}}(\tau)
+  \bigr\}.
+  \label{eq:front}
+\end{equation}
+%
+This \emph{advancing-front} set $\mathcal{F}$ includes the first frame of the
+event and every subsequent frame at which the tip reaches a new maximum depth.
+All within-event retreats, regardless of magnitude, are excluded.
+
+\subsection{Frame Selection for Regression}
+\label{sec:frame_selection}
+
+Velocity regression is performed preferentially on \emph{complete-arc frames}
+(\texttt{arc\_complete} = 1), in which the arc bridges both electrodes and the
+tip position is geometrically unambiguous. In these frames the arc has
+propagated sufficiently far that both electrode edges are spanned, providing
+the most reliable binarisation of the arc tip. If a primary event contains
+fewer than $N_{\min} = 5$ complete-arc frames, all detected frames for that
+event are used as a fallback.
+
+Let $\mathcal{C} \subseteq \text{event}$ denote the set of complete-arc frames.
+The regression frame set is
+%
+\begin{equation}
+  \mathcal{R} =
+  \begin{cases}
+    \mathcal{C} & \text{if } |\mathcal{C}| \geq N_{\min}, \\
+    \text{event} & \text{otherwise.}
+  \end{cases}
+\end{equation}
+%
+The advancing-front filter (Eq.~\ref{eq:front}) is then applied to
+$\mathcal{R}$ rather than to all detected frames.
+
+\subsection{Event-Regression Velocity}
+\label{sec:regression}
+
+For each discharge event with $|\mathcal{F}| \geq N_{\min} = 5$ advancing-front
+frames (drawn from $\mathcal{R}$), a linear model is fitted to the
+advancing-front tip-row trajectory:
+%
+\begin{equation}
+  r_{\text{tip}}(t) = \alpha\, t + \beta + \varepsilon(t),
+  \quad t \in \mathcal{F},
+  \label{eq:regression}
+\end{equation}
+%
+where $\alpha$ (px\,frame$^{-1}$) is the regression slope and $\varepsilon$ is
+the residual. The event-averaged arc-tip velocity in SI units is then
+%
+\begin{equation}
+  v_{\text{event}} = \frac{\alpha \cdot f_s}{s \cdot 10^3}
+    \quad [\text{m\,s}^{-1}],
+  \label{eq:velocity}
+\end{equation}
+%
+where $f_s = \SI{200000}{Hz}$ is the frame rate and $s = 9.167\,\text{px\,mm}^{-1}$
+is the calibration factor. The factor $10^3$ converts mm\,s$^{-1}$ to m\,s$^{-1}$.
+
+The goodness-of-fit is quantified by the coefficient of determination
+%
+\begin{equation}
+  R^2 = 1 - \frac{\sum_{t \in \mathcal{F}} (r_{\text{tip}}(t) - \hat{r}(t))^2}
+                  {\sum_{t \in \mathcal{F}} (r_{\text{tip}}(t) - \bar{r})^2},
+  \label{eq:r2}
+\end{equation}
+%
+where $\hat{r}(t) = \alpha t + \beta$ is the fitted value and $\bar{r}$ is the
+mean tip row over $\mathcal{F}$. An event with $R^2 \approx 1$ propagates at
+nearly constant velocity; $R^2 \ll 1$ indicates an irregular or accelerating
+trajectory.
+
+\subsection{Comparison with Frame-to-Frame Velocity}
+\label{sec:comparison}
+
+A na\"ive velocity estimate based on consecutive-frame ($\Delta = 1$)
+displacements,
+%
+\begin{equation}
+  v_{\Delta=1}(t) = \frac{(r_{\text{tip}}(t+1) - r_{\text{tip}}(t)) \cdot f_s}
+                         {s \cdot 10^3}
+  \quad [\text{m\,s}^{-1}],
+\end{equation}
+%
+yields a median value approximately 20-fold larger than the event-regression
+estimate. This arises because (i) cross-event jumps (arc extinguishing and
+re-nucleating far from the last detected tip) produce spuriously large
+single-frame displacements, and (ii) single-frame position estimates are
+contaminated by sub-pixel binarisation noise that is amplified by
+differentiation.
+
+The event-regression method eliminates both sources of error: spatial event
+boundaries prevent cross-discharge jumps, and fitting over many frames
+suppresses high-frequency noise by averaging.
+
+\subsection{Velocity Sanity Check}
+\label{sec:sanity}
+
+To validate the event-regression result independently, a second velocity
+estimator was applied using stricter quality gates:
+%
+\begin{enumerate}
+  \item \textbf{Full-arc filter}: only frames where both electrode tips are
+        detected and the measured electrode gap exceeds 70\% of the per-file
+        maximum are used.
+  \item \textbf{Brightness filter}: only the top 25\% of detected frames by
+        integrated intensity are used.
+  \item \textbf{Spatial event boundaries}: same reset-row criterion as
+        \cref{eq:primary_reset}.
+  \item \textbf{Positive-displacement constraint}: only pairs in which the tip
+        moves strictly downward ($r_j > r_i$) contribute to velocity estimates.
+\end{enumerate}
+%
+Velocity was computed from tip-to-tip displacements at four temporal spacings
+$\Delta \in \{1, 50, 100, 500\}$ frames. A consistent median velocity across
+all spacings confirms that the estimate is not contaminated by cross-event
+contamination or single-frame noise. The median converges to the event-regression
+value at $\Delta \geq 50$ frames, confirming that the event-regression method
+is physically correct.
+
+% ===========================================================================
+\section{Velocity Dynamics Within Discharge Events}
+\label{sec:dynamics}
+% ===========================================================================
+
+To characterise how the arc-tip velocity evolves during a single discharge, a
+\emph{local} velocity is estimated at multiple positions along the advancing
+front of each event. At advancing-front frame $t_k \in \mathcal{F}$, the next
+advancing-front frame $t_j$ that is at least $W = 40$ real frames ahead is
+located:
+%
+\begin{equation}
+  j = \min \bigl\{ j' > k : t_{j'} \geq t_k + W \bigr\},
+  \quad W = 40\,\text{frames} = \SI{200}{\micro\second}.
+\end{equation}
+%
+The local velocity at that position is
+%
+\begin{equation}
+  v_{\text{local}}(t_k) =
+    \frac{(r_{t_j} - r_{t_k}) / s}{(t_j - t_k) / f_s \cdot 10^3}
+  \quad [\text{m\,s}^{-1}],
+\end{equation}
+%
+and the normalised arc position at the midpoint of the pair is
+%
+\begin{equation}
+  \xi = \frac{\tfrac{1}{2}(r_{t_k} + r_{t_j}) - r_{\min}^{\mathcal{F}}}
+             {r_{\max}^{\mathcal{F}} - r_{\min}^{\mathcal{F}}},
+  \quad \xi \in [0, 1].
+\end{equation}
+%
+Only advancing-front frames are used, so retreats within an event never
+contribute to a local velocity estimate. An event must span at least
+$\delta r_{\min} = 10$\,px in order to appear in the dynamics analysis.
+
+Dynamics are visualised in two complementary figures:
+
+\begin{enumerate}
+  \item \textbf{Density plot}: a two-dimensional hexagonal-bin histogram of
+        $(\xi, v_{\text{local}})$ for each run, with percentile curves (p10,
+        p50, p90) overlaid. The $y$-axis is clipped at the 99th percentile to
+        suppress extreme outliers without discarding them from density counts.
+
+  \item \textbf{Event heatmap}: an $N_{\text{events}} \times N_{\text{bins}}$
+        matrix where each row corresponds to a single event, each column to a
+        normalised position bin, and the cell colour encodes mean local
+        velocity. Events are sorted by their regression velocity
+        (\cref{eq:velocity}) so that any systematic relationship between
+        event-average velocity and within-event dynamics is immediately visible.
+        White cells indicate no advancing-front data in that bin.
+\end{enumerate}
+
+% ===========================================================================
+\section{Frequency-Domain Analysis}
+\label{sec:fft}
+% ===========================================================================
+
+Three time series are extracted from the per-frame measurements and analysed
+in the frequency domain to identify periodicities associated with the AC
+supply (nominally \SI{50}{Hz}) and its harmonics:
+
+\begin{enumerate}
+  \item \textbf{Arc detection rate}: binary signal $d(t) \in \{0,1\}$,
+        zero-filled at non-detected frames.
+  \item \textbf{Arc tip depth}: $r_{\text{tip}}(t)$ in mm, linearly
+        interpolated across non-detected frames.
+  \item \textbf{Arc column length}: $\ell(t)$ in mm, linearly interpolated
+        across non-detected frames.
+\end{enumerate}
+
+For each time series $x(t)$, $t = 0, 1, \ldots, N-1$:
+
+\begin{enumerate}
+  \item \textbf{Mean removal}: $x'(t) = x(t) - \bar{x}$ removes the DC
+        component, which would otherwise dominate the spectrum and obscure
+        low-amplitude oscillations.
+  \item \textbf{Hann window}: $x''(t) = x'(t) \cdot w(t)$, where
+        $w(t) = \tfrac{1}{2}\bigl(1 - \cos(2\pi t / N)\bigr)$ is the Hann
+        window. Windowing suppresses spectral leakage from the finite record
+        length.
+  \item \textbf{One-sided power spectrum}:
+        \begin{equation}
+          S(f_k) = \frac{1}{N} \left| \mathrm{DFT}\{x''\}[k] \right|^2,
+          \qquad f_k = \frac{k \cdot f_s}{N},
+          \quad k = 0, 1, \ldots, \lfloor N/2 \rfloor.
+        \end{equation}
+  \item \textbf{Spectral peaks}: local maxima of $S(f)$ are identified using
+        a minimum peak height of $0.01 \cdot S_{\max}$ and a minimum
+        inter-peak separation of $5/(f_k - f_{k-1})$ frequency bins. The five
+        most prominent peaks are annotated on the output figure.
+\end{enumerate}
+
+Spectra are displayed over the range $0$--\SI{500}{Hz}, well above the
+frequency range of interest while remaining far below the Nyquist limit of
+\SI{100}{kHz}. Both individual-run spectra and a three-run overlay are saved.
+
+% ===========================================================================
+\section{Two-Dimensional Velocity Maps}
+\label{sec:velmap}
+% ===========================================================================
+
+Spatial distributions of arc-tip velocity are visualised as two-dimensional
+maps in the image plane. For each pixel $\mathbf{p} = (r, c)$ that belongs to
+the arc mask in at least one qualifying frame, the map value is the
+hit-count-weighted mean of the event-regression velocity over all frames in
+which $\mathbf{p}$ was part of the arc:
+%
+\begin{equation}
+  v_{\text{map}}(\mathbf{p}) =
+    \frac{\displaystyle\sum_{t} v_{\text{event}}(t)\,
+          \mathbf{1}[\mathbf{p} \in \mathcal{M}_t]}
+         {\displaystyle\sum_{t} \mathbf{1}[\mathbf{p} \in \mathcal{M}_t]},
+  \label{eq:velmap}
+\end{equation}
+%
+where $v_{\text{event}}(t)$ is the regression velocity of the discharge event
+containing frame $t$, and $\mathbf{1}[\mathbf{p} \in \mathcal{M}_t]$ is the
+indicator that pixel $\mathbf{p}$ belongs to the binarised arc mask at
+frame $t$.
+
+Pixels with a hit count below a threshold
+%
+\begin{equation}
+  n_{\text{thresh}} = \max\!\bigl(5,\; 0.02 \times \max_{\mathbf{p}} n(\mathbf{p})\bigr)
+\end{equation}
+%
+are set to \texttt{NaN} and rendered as transparent. This adaptive threshold
+retains only pixels consistently covered by the arc column while suppressing
+background pixels that were hit by rare, spurious detections.
+
+Three variants of the velocity map are produced per run:
+
+\begin{enumerate}
+  \item \textbf{Full arcs only}: frames in which \texttt{arc\_complete = True}
+        (\cref{eq:complete}), representing the bridged discharge geometry.
+  \item \textbf{Partial arcs only}: frames in which \texttt{arc\_complete =
+        False}, representing leaders or streamers before gap closure.
+  \item \textbf{Combined}: both arc types together, equivalent to the union
+        of the two preceding maps weighted by hit count.
+\end{enumerate}
+
+Axes are expressed in millimetres, with depth increasing downward from
+$y = 0$ at the electrode gap (\cref{eq:calibration}).
+
+\textbf{Implementation note}: the binarisation applied during velocity-map
+reconstruction uses the same \texttt{normalize\_frame} + \texttt{binarize}
+pipeline as the primary measurement phase (\cref{sec:preprocessing,sec:binarise}).
+Passing raw 16-bit pixel values directly to the Otsu routine without prior
+normalisation would produce incorrect thresholds because the routine operates
+on a $[0,1]$ intensity scale; this was identified as a source of spurious
+background detections in earlier map iterations.
+
+% ===========================================================================
+\section{Software Implementation}
+\label{sec:software}
+% ===========================================================================
+
+All analysis was performed in Python~3 using the following principal
+libraries: NumPy (array operations), SciPy (\texttt{scipy.signal.find\_peaks}
+for spectral peak detection), scikit-image (\texttt{threshold\_otsu},
+\texttt{label}, \texttt{closing}, \texttt{disk}), tifffile (TIFF I/O),
+pandas (tabular data management), and Matplotlib (figure generation).
+
+The pipeline is composed of the following scripts:
+
+\begin{description}
+  \item[\texttt{blade\_run2.py}] Primary frame-by-frame processing: dark-frame
+        rejection, normalisation, binarisation, geometric measurement,
+        calibration, and CSV export. Processing is divided into chunks with
+        checkpoint files to allow resumption after interruption.
+
+  \item[\texttt{event\_velocity.py}] Discharge event segmentation, advancing-front
+        filtering, linear regression velocity, and dynamics analysis.
+        Reads the per-run CSVs produced by \texttt{blade\_run2.py}, vertically
+        concatenates them into a single \texttt{measurements\_all.csv} (tagged
+        by the \texttt{file} column), and then appends event identifiers and
+        regression velocities to produce \texttt{measurements\_all\_events.csv}.
+        Also produces \texttt{event\_summary.csv} with one row per primary
+        event.
+
+  \item[\texttt{velocity\_sanity\_check.py}] Independent validation of the
+        event-regression velocity using full-arc / brightness filters and
+        multiple temporal spacings (\cref{sec:sanity}).
+
+  \item[\texttt{replot\_velmap.py}] Two-dimensional velocity map construction
+        from \texttt{measurements\_all\_events.csv} and the original TIFF
+        files, with separate maps for full arcs, partial arcs, and both
+        combined (\cref{sec:velmap}).
+
+  \item[\texttt{fourier\_analysis.py}] Frequency-domain analysis of detection
+        rate, tip depth, and arc length time series (\cref{sec:fft}).
+
+  \item[\texttt{visualize\_blade.py}] Publication-ready figure generation from
+        the combined CSV.
+
+  \item[\texttt{run\_pipeline.py}] Orchestration script that executes all
+        pipeline stages in order with checkpoint-based resumption.
+
+  \item[\texttt{qa\_thresh.py}] Quality-assurance script that renders a grid
+        of thresholded frames for a range of \texttt{BRIGHT\_CLIP\_PCTILE} and
+        \texttt{OTSU\_GATE\_PCTILE} parameter combinations. Used to select
+        binarisation parameters before running the full pipeline.
+
+  \item[\texttt{qa\_frames.py}] Quality-assurance script that renders
+        annotated side-by-side composites (raw frame, normalised frame,
+        binary mask) for a user-specified set of frame indices. Used to
+        visually verify detection quality and diagnose false positives or
+        missed detections on specific frames of interest.
+
+  \item[\texttt{qa\_events.py}] Quality-assurance script that renders
+        kymograph-style event panels for a random sample of detected primary
+        events, overlaying the arc-tip trajectory, event boundary markers,
+        and regression fit. Used to verify that event segmentation and
+        velocity regression are physically sensible.
+\end{description}
+
+All numerical parameters discussed in this document are defined as named
+constants at the top of the relevant script to facilitate reproducibility
+and sensitivity testing.
+
+% ===========================================================================
+\section{Parameter Summary}
+\label{sec:params}
+% ===========================================================================
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+Parameter & Symbol & Value & Defined in \\
+\midrule
+Frame rate            & $f_s$                   & \SI{200000}{Hz}        & \texttt{blade\_run2.py} \\
+Calibration           & $s$                     & 9.167\,px\,mm$^{-1}$  & \texttt{blade\_run2.py} \\
+Dark-frame guard      & $\theta_{\text{dark}}$  & 35\,DN                 & \texttt{blade\_run2.py} \\
+Min arc area          & $A_{\min}$              & 5\,px                  & \texttt{blade\_run2.py} \\
+Max arc area          & $A_{\max}$              & 3000\,px               & \texttt{blade\_run2.py} \\
+Closing radius        & $r_c$                   & 3\,px                  & \texttt{blade\_run2.py} \\
+Opening radius        & $r_o$                   & 2\,px                  & \texttt{blade\_run2.py} \\
+Flash bbox top        & —                       & $r_0^{\text{bbox}} < 5$\,px & \texttt{blade\_run2.py} \\
+Flash min area        & —                       & $>400$\,px             & \texttt{blade\_run2.py} \\
+Nucleation slack      & $\alpha_{\text{nuc}}$   & 0.15 (15\% of arc range)  & \texttt{event\_velocity.py} \\
+Sub-event retreat     & $\alpha_{\text{sub}}$   & 0.50 (50\% of extension)  & \texttt{event\_velocity.py} \\
+Max frame gap         & $\Delta t_{\max}$       & 500\,frames (\SI{2.5}{ms}) & \texttt{event\_velocity.py} \\
+Min event frames      & $N_{\min}$              & 5                      & \texttt{event\_velocity.py} \\
+Dynamics window       & $W$                     & 40\,frames (\SI{200}{\micro\second}) & \texttt{event\_velocity.py} \\
+Min arc extension     & $\delta r_{\min}$       & 10\,px                 & \texttt{event\_velocity.py} \\
+Position bins         & $N_{\text{bins}}$       & 10                     & \texttt{event\_velocity.py} \\
+Velmap min area       & $A_{\min}^{\text{map}}$ & 150\,px                & \texttt{replot\_velmap.py} \\
+Velmap max area       & $A_{\max}^{\text{map}}$ & 3000\,px               & \texttt{replot\_velmap.py} \\
+Velmap hit fraction   & —                       & 2\% of max             & \texttt{replot\_velmap.py} \\
+FFT display range     & —                       & 0–\SI{500}{Hz}         & \texttt{fourier\_analysis.py} \\
+Sanity: min gap frac  & —                       & 0.70                   & \texttt{velocity\_sanity\_check.py} \\
+Sanity: brightness    & —                       & top 25\%               & \texttt{velocity\_sanity\_check.py} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ===========================================================================
+\bibliographystyle{plain}
+\begin{thebibliography}{9}
+
+\bibitem{otsu1979threshold}
+N.~Otsu,
+``A threshold selection method from gray-level histograms,''
+\textit{IEEE Transactions on Systems, Man, and Cybernetics},
+vol.~9, no.~1, pp.~62--66, 1979.
+
+\bibitem{fridman2005}
+A.~Fridman, S.~Nester, L.~Kennedy, A.~Saveliev, and O.~Mutaf,
+``Gliding arc gas discharge,''
+\textit{Progress in Energy and Combustion Science},
+vol.~25, no.~2, pp.~211--231, 1999.
+
+\bibitem{gangoli2007}
+S.~P. Gangoli, A.~F. Gutsol, and A.~A. Fridman,
+``A non-equilibrium plasma source: magnetically stabilized gliding arc
+discharge in nitrogen,''
+\textit{Plasma Sources Science and Technology},
+vol.~16, pp.~465--480, 2007.
+
+\end{thebibliography}
+
+\end{document}

@@ -60,8 +60,7 @@ def main():
     t = df["time_s"]
 
     axes[0].plot(t, df["area_mm2"] if px else df["area_px"])
-    axes[0].set_ylabel("Area (mm²)" if px else "Area (px)")
-    axes[0].set_title(cine_path.name)
+    axes[0].set_ylabel("Area (mm2)" if px else "Area (px)")
 
     axes[1].plot(t, df["arc_length_mm"] if px else df["arc_length_px"])
     axes[1].set_ylabel("Arc Length (mm)" if px else "Arc Length (px)")
