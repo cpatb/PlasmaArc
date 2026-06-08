@@ -388,15 +388,26 @@ def compute_local_velocities(df):
     complete-arc / fallback selection logic as fit_events() is applied so that
     the local velocity is consistent with the event regression.
 
+    The full 2-D tip-velocity vector is also computed over the SAME window by
+    additionally regressing the tip COLUMN against frame:
+        local_vy_ms    = axial slope  (row / electrode-distance axis) == local_vel_ms
+        local_vx_ms    = lateral slope (image-column axis)
+        local_speed_ms = hypot(vx, vy)   (the genuine tip speed)
+    local_vel_ms is kept as the axial component (vy) for backward compatibility;
+    local_speed_ms is the magnitude of the true 2-D motion and is >= |vy|.
+
     Returns:
-        frame_vel : dict {(file, frame) → local_vel_ms}
+        frame_vel : dict {(file, frame) → local_vel_ms}  (axial, == vy)
             Only advancing-front frames are present; all others map to NaN in CSV.
+        frame_vec : dict {(file, frame) → (vx_ms, vy_ms, speed_ms)}
+            The 2-D vector on the same advancing-front frames.
         dyn : DataFrame with columns [event_id, norm_pos, vel_ms, extension, file]
             Used for density and heatmap plots.
     """
     detected    = df[df['event_id'] >= 0].dropna(subset=['arc_tip_row'])
     detected    = detected[~arc_filter.flash_mask(detected)]   # criterion 3: drop flashes
     frame_vel   = {}
+    frame_vec   = {}
     dyn_records = []
     half        = LOCAL_VEL_N // 2
 
@@ -414,6 +425,9 @@ def compute_local_velocities(df):
 
         frames      = fit_g['frame'].values.astype(float)
         rows        = fit_g['arc_tip_row'].values.astype(float)
+        cols        = (fit_g['arc_tip_col'].values.astype(float)
+                       if 'arc_tip_col' in fit_g.columns
+                       else np.full(len(fit_g), np.nan))
         orig_frames = fit_g['frame'].values
 
         front = advancing_front(frames, rows)
@@ -422,6 +436,7 @@ def compute_local_velocities(df):
 
         f_front    = frames[front]
         r_front    = rows[front]
+        c_front    = cols[front]
         orig_front = orig_frames[front]
 
         ext = r_front[-1] - r_front[0]
@@ -439,6 +454,18 @@ def compute_local_velocities(df):
 
             frame_vel[(fname, int(orig_front[k]))] = vel_ms
 
+            # 2-D vector: regress the tip COLUMN over the same window for the
+            # lateral component, then form the true speed magnitude.
+            cw = c_front[lo:hi]
+            if np.isfinite(cw).all():
+                slope_c, _ = np.polyfit(f_front[lo:hi], cw, 1)
+                vx_ms      = slope_c * FPS / PX_PER_MM / 1000
+                speed_ms   = float(np.hypot(vx_ms, vel_ms))
+            else:
+                vx_ms      = np.nan
+                speed_ms   = abs(float(vel_ms))   # fall back to axial magnitude
+            frame_vec[(fname, int(orig_front[k]))] = (vx_ms, vel_ms, speed_ms)
+
             if ext >= MIN_EXTENSION_PX:
                 norm_pos = float(np.clip((r_front[k] - r_front[0]) / ext, 0.0, 1.0))
                 dyn_records.append({
@@ -450,26 +477,32 @@ def compute_local_velocities(df):
                 })
 
     print(f"Local velocities computed: {len(frame_vel):,} advancing-front frames  "
-          f"(window N={LOCAL_VEL_N})")
-    return frame_vel, pd.DataFrame(dyn_records)
+          f"(window N={LOCAL_VEL_N}; axial vy + lateral vx + 2-D speed)")
+    return frame_vel, frame_vec, pd.DataFrame(dyn_records)
 
 # ---
 # Merge and output
 # ---
 
-def merge_back(df, events, frame_vel=None):
+def merge_back(df, events, frame_vel=None, frame_vec=None):
     """
     Attach event_vel_ms (event regression scalar) and local_vel_ms
-    (per-frame sliding-window OLS) to every row of df.
+    (per-frame sliding-window OLS) to every row of df.  When frame_vec is
+    supplied, also attach the full 2-D tip-velocity vector on the same frames:
+    local_vx_ms (lateral), local_vy_ms (axial, == local_vel_ms), and
+    local_speed_ms (the genuine speed magnitude, >= |axial|).
 
     local_vel_ms is NaN for retreating frames, non-detected frames, and
     events that were too short to fit.  Downstream velocity maps should use
     local_vel_ms where available and fall back to event_vel_ms otherwise.
     """
     df = df.copy()
+    vec_cols = ['local_vx_ms', 'local_vy_ms', 'local_speed_ms']
     if events.empty:
         df['event_vel_ms'] = np.nan
         df['local_vel_ms'] = np.nan
+        for c in vec_cols:
+            df[c] = np.nan
         return df
     vel_map = events.set_index('event_id')['vel_ms'].to_dict()
     df = df.copy()
@@ -485,6 +518,19 @@ def merge_back(df, events, frame_vel=None):
         df = df.merge(lv, on=['file', 'frame'], how='left')
     else:
         df['local_vel_ms'] = np.nan
+
+    if frame_vec:
+        vv = pd.DataFrame(
+            [{'file': f, 'frame': int(fr),
+              'local_vx_ms': vx, 'local_vy_ms': vy, 'local_speed_ms': sp}
+             for (f, fr), (vx, vy, sp) in frame_vec.items()]
+        )
+        df['frame']  = pd.to_numeric(df['frame'], errors='coerce')
+        vv['frame']  = vv['frame'].astype(df['frame'].dtype)
+        df = df.merge(vv, on=['file', 'frame'], how='left')
+    else:
+        for c in vec_cols:
+            df[c] = np.nan
 
     return df
 
@@ -532,6 +578,24 @@ def add_local_velocity_stats(events, df_merged):
               'local_vel_peak', 'local_vel_max', 'local_vel_std']:
         stats[c] = stats[c].round(4)
     events = events.merge(stats, on='event_id', how='left')
+
+    # Per-event 2-D SPEED statistics (magnitude of the true tip-velocity vector).
+    if 'local_speed_ms' in df_merged.columns:
+        gs = df_merged.dropna(subset=['local_speed_ms'])
+        gs = gs[gs['local_speed_ms'] > 0]
+        if len(gs):
+            sp = gs.groupby('event_id')['local_speed_ms'].agg(
+                local_speed_median='median',
+                local_speed_mean='mean',
+                local_speed_p90=lambda x: x.quantile(0.90),
+                local_speed_peak=lambda x: x.quantile(0.95),
+                local_speed_max='max',
+            ).reset_index()
+            for c in ['local_speed_median', 'local_speed_mean', 'local_speed_p90',
+                      'local_speed_peak', 'local_speed_max']:
+                sp[c] = sp[c].round(4)
+            events = events.merge(sp, on='event_id', how='left')
+
     n = int(events['n_local_frames'].notna().sum())
     print(f"Per-event local-velocity stats added for {n} events "
           f"(median/mean/p10/p90/peak/max/std).")
@@ -1009,8 +1073,8 @@ def main():
     df, electrode_info = assign_events(df)
     events             = fit_events(df, electrode_info=electrode_info)
     events             = classify_modes(events)
-    frame_vel, dyn     = compute_local_velocities(df)
-    df_merged          = merge_back(df, events, frame_vel)
+    frame_vel, frame_vec, dyn = compute_local_velocities(df)
+    df_merged          = merge_back(df, events, frame_vel, frame_vec)
     events             = add_local_velocity_stats(events, df_merged)
 
     # The per-event 'mode' here is the LEGACY event-start classifier, which is

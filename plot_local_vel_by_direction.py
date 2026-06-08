@@ -119,7 +119,7 @@ def main():
         for ax, d in zip(axes, paths):
             df = pd.read_csv(resolve(paths[d]))
             ev.LOCAL_VEL_N = args.n_compare
-            fvN, _ = ev.compute_local_velocities(df)
+            fvN, _, _ = ev.compute_local_velocities(df)
             vN = np.array(list(fvN.values()), float)
             vN = vN[np.isfinite(vN) & (vN > 0)]
             v5 = stored[d]
