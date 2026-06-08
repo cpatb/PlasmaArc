@@ -88,6 +88,9 @@ def hist_kde_groups(ax, groups, xcap, xlabel, ylabel, title, n_bins=25):
         x = np.linspace(0, xcap, 400)
         ax.plot(x, gaussian_kde(v)(x), color=color, lw=1.8,
                 label=label)
+        # dashed vertical line at the group MEAN (not median)
+        ax.axvline(float(np.mean(v)), color=color, ls='--', lw=1.2, alpha=0.9)
+    ax.plot([], [], color='gray', ls='--', lw=1.2, label='dashed = mean')
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.legend(fontsize=8, frameon=False)
@@ -114,7 +117,10 @@ def hist_kde_signed(ax, groups, xabs, xlabel, ylabel, n_bins=31):
         else:
             ax.plot([], [], color=color, lw=1.8,
                     label=label)
-    ax.axvline(0.0, ls='--', lw=0.8, color='gray')
+        # dashed vertical line at the group MEAN (not median)
+        ax.axvline(float(np.mean(v)), color=color, ls='--', lw=1.2, alpha=0.9)
+    ax.axvline(0.0, ls=':', lw=0.8, color='gray')  # zero reference (dotted)
+    ax.plot([], [], color='gray', ls='--', lw=1.2, label='dashed = mean')
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.legend(fontsize=8, frameon=False)

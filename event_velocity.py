@@ -952,7 +952,7 @@ def main():
     # Declared global up front: PX_PER_MM and FPS are read in the argparse help
     # strings below (and reassigned after parsing), so the declaration must
     # precede their first use in this function.
-    global PX_PER_MM, FPS
+    global PX_PER_MM, FPS, LOCAL_VEL_N
     import argparse
     ap = argparse.ArgumentParser(description='Event velocity — advancing-front regression')
     ap.add_argument('csv',         nargs='?', default=None,
@@ -964,6 +964,13 @@ def main():
                          'default %.4f (ADCB).  Pass 8.8 for 11MAY26.' % PX_PER_MM)
     ap.add_argument('--fps',       type=float, default=None,
                     help='Frame rate in fps.  Default %.0f.' % FPS)
+    ap.add_argument('--local-vel-n', type=int, default=None,
+                    help='Sliding-window width (advancing-front frames) for the '
+                         'local OLS velocity. Centered: N=%d -> +/-%d neighbors. '
+                         'Larger N smooths the per-frame velocity and suppresses '
+                         'short-baseline (spurious) spikes at the cost of time '
+                         'resolution. Default %d.'
+                         % (LOCAL_VEL_N, LOCAL_VEL_N // 2, LOCAL_VEL_N))
     args = ap.parse_args()
 
     # Override module-level calibration if supplied on the command line.
@@ -975,6 +982,10 @@ def main():
         PX_PER_MM = args.px_per_mm
     if args.fps is not None:
         FPS = args.fps
+    if args.local_vel_n is not None:
+        if args.local_vel_n < 3:
+            ap.error('--local-vel-n must be >= 3 (need >= 3 points for an OLS fit)')
+        LOCAL_VEL_N = args.local_vel_n
 
     script_dir = Path(__file__).parent.resolve()
     csv_path   = Path(args.csv)     if args.csv     else script_dir / 'measurements_all.csv'
@@ -991,6 +1002,7 @@ def main():
     print(f"  Output     : {out_dir}")
     print(f"  px/mm      : {PX_PER_MM:.4f}")
     print(f"  FPS        : {FPS:.0f}")
+    print(f"  local N    : {LOCAL_VEL_N}  (+/-{LOCAL_VEL_N // 2} advancing-front neighbors)")
     print(f"{'=' * 55}\n")
 
     df                 = load(csv_path)

@@ -557,6 +557,12 @@ def main():
                          '(m/s).  Default: auto (95th percentile of arc body, '
                          'excluding electrode-gap rows).  Set a fixed value to '
                          'suppress flash-arc noise at the electrode top.')
+    ap.add_argument('--arc-direction', choices=['down', 'up'], default='down',
+                    help="Reactor orientation for this recording. The 2-D velocity "
+                         "map is stored in raw image rows (electrode at TOP for "
+                         "'down', at BOTTOM for 'up'). For 'up' the map is flipped "
+                         "vertically so depth 0 (the electrode gap) is at the top of "
+                         "the figure and the depth axis is correct for both.")
     args = ap.parse_args()
 
     # Override module-level calibration constants so every downstream function
@@ -634,12 +640,40 @@ def main():
            for c in ['arclen_asym', 'tort_asym']):
         fig_asymmetry_dist(det, out_dir)
 
+    # ── 2-D velocity maps ──────────────────────────────────────────────────────
+    # The maps are stored in raw image-row coordinates.  For the UPWARD recording
+    # the electrode gap sits at the BOTTOM of the frame, so flip the map
+    # vertically: like the downward recording, depth 0 (the electrode gap) is then
+    # at the TOP of the figure and both the gap-row exclusion below and the
+    # 'Depth (mm) [0 = electrode gap]' axis in fig_velmap are correct.
+    if args.arc_direction == 'up':
+        vmaps = {k: v[::-1, :] for k, v in vmaps.items()}
+        if roi_mask is not None:
+            roi_mask = roi_mask[::-1, :]
+
     # Shared vmax across all runs so the colourmap is comparable.
-    _vmin_km_s = VELMAP_VMIN / 1000.0
     if VELMAP_VMAX is not None:
         shared_vmax = VELMAP_VMAX / 1000.0
     else:
         _gap = max(1, int(round(2.0 * PX_PER_MM)))
-        _pos = [v / 1000.0 for v in vmaps.values()]
-        _pos = [p[_gap:, :] if p.shape[0] > _gap else p for p in _pos]
-        _pos = np.concatena
+        _pos_maps = [v / 1000.0 for v in vmaps.values()]
+        _pos_maps = [p[_gap:, :] if p.shape[0] > _gap else p for p in _pos_maps]
+        if _pos_maps:
+            _allpos = np.concatenate(
+                [p[np.isfinite(p) & (p > 0)].ravel() for p in _pos_maps])
+            shared_vmax = float(np.nanpercentile(_allpos, 95)) if _allpos.size else 1.0
+        else:
+            shared_vmax = 1.0
+
+    for fig_i, (run_label, stem) in enumerate(zip(RUN_LABELS[:n_runs], stems)):
+        vm = vmaps.get(stem)
+        if vm is None:
+            continue
+        fig_velmap(vm, run_label, 17 + fig_i, out_dir,
+                   roi_mask=roi_mask, vmax=shared_vmax)
+
+    print('\nDone. Figures written to: %s' % out_dir)
+
+
+if __name__ == '__main__':
+    main()

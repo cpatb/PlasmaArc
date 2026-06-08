@@ -10,6 +10,7 @@ mode_vel_advance_dir.png      -- per-CYCLE advance velocity, down vs up
 mode_vel_boxplot.png          -- per-CYCLE advance velocity, 4-group box+jitter
 mode_dur_AB.png               -- per-CYCLE propagation duration (ms), A vs B
 mode_dur_dir.png              -- per-CYCLE propagation duration, down vs up
+mode_dur_allgroups.png        -- per-CYCLE propagation duration, 4 groups (mode x direction) overlaid
 mode_dur_boxplot.png          -- per-CYCLE propagation duration, 4-group box+jitter
 
 Advance velocity = linear regression slope of arc-tip position from the
@@ -73,6 +74,9 @@ def hist_kde_groups(ax, groups, xcap, xlabel, ylabel, title, n_bins=25):
         x = np.linspace(0, xcap, 400)
         ax.plot(x, gaussian_kde(v)(x), color=color, lw=1.8,
                 label=label)
+        # dashed vertical line at the group MEAN (not median)
+        ax.axvline(float(np.mean(v)), color=color, ls='--', lw=1.2, alpha=0.9)
+    ax.plot([], [], color='gray', ls='--', lw=1.2, label='dashed = mean')
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.legend(fontsize=8, frameon=False)
@@ -242,8 +246,8 @@ def main():
         v = np.asarray(g_av(*key), float)
         v = v[np.isfinite(v) & (v > 0) & (v <= av_cap)]
         data4.append(v); colors4.append(GCOLOR[key])
-        med = np.mean(v) if len(v) else float('nan')
-        labels4.append('%s\nn=%d\nmed=%.2f' % (GLABEL[key], len(v), med))
+        mean = np.mean(v) if len(v) else float('nan')
+        labels4.append('%s\nn=%d\nmean=%.2f' % (GLABEL[key], len(v), mean))
     box4_generic(ax, data4, labels4, colors4, av_cap,
                  ylabel='Advance velocity (m/s)',
                  title='Arc advance velocity by mode x direction\n'
@@ -275,6 +279,18 @@ def main():
                               'Mann-Whitney p = %s' % ps(p_ud_d))
         savefig(fig, out_dir / 'mode_dur_dir.png')
 
+        # Figure 6b: duration, all 4 mode x direction groups overlaid
+        fig, ax = plt.subplots(figsize=(7, 4))
+        dgroups = [(GLABEL[k], GCOLOR[k], g_dur_ms(*k)) for k in GROUP_ORDER]
+        hist_kde_groups(ax, dgroups, dur_cap,
+                        xlabel='Propagation duration (ms)',
+                        ylabel='Probability density',
+                        title='Arc propagation duration by mode x direction\n'
+                              '(per re-strike cycle, %.0f fps)\n'
+                              'A-up vs A-dn p=%s   B-up vs B-dn p=%s'
+                              % (args.fps, ps(p_Aud_d), ps(p_Bud_d)))
+        savefig(fig, out_dir / 'mode_dur_allgroups.png')
+
         # Figure 7: duration, 4-group boxplot
         fig, ax = plt.subplots(figsize=(6, 4))
         data7, labels7, colors7 = [], [], []
@@ -282,8 +298,8 @@ def main():
             v = np.asarray(g_dur_ms(*key), float)
             v = v[np.isfinite(v) & (v > 0) & (v <= dur_cap)]
             data7.append(v); colors7.append(GCOLOR[key])
-            med = np.mean(v) if len(v) else float('nan')
-            labels7.append('%s\nn=%d\nmed=%.2f ms' % (GLABEL[key], len(v), med))
+            mean = np.mean(v) if len(v) else float('nan')
+            labels7.append('%s\nn=%d\nmean=%.2f ms' % (GLABEL[key], len(v), mean))
         box4_generic(ax, data7, labels7, colors7, dur_cap,
                      ylabel='Propagation duration (ms)',
                      title='Arc propagation duration by mode x direction\n'

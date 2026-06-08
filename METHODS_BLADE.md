@@ -137,7 +137,14 @@ except for `--px-per-mm 8.8 --fps 200000`:
 - **Velocity** is the slope of a least-squares fit to the **advancing-front**
   (monotonic-envelope) tip trajectory, converted with
   `vel = slope · FPS / px_per_mm / 1000` (m/s). R² reports linearity. A
-  sliding-window OLS gives a time-resolved local velocity.
+  sliding-window OLS gives a time-resolved local velocity, using a centered
+  window of **N = 10** advancing-front frames (±5 neighbours, `--local-vel-n`).
+  N = 10 is the canonical setting for this experiment: the narrower N = 5 window
+  spans only ~25 µs and produced short-baseline spurious velocity spikes; N = 10
+  (~50 µs) suppresses them at a modest cost in time resolution. This local
+  velocity feeds `local_vel_ms`, the per-event `local_vel_*` statistics, the
+  mode comparisons, and the 2-D velocity map. (Note: the legacy `METHODS.md`,
+  describing the J-electrode dataset, also states N = 10.)
 - **Mode A / B** from the dimensionless normalised nucleation position
   `(tip_row_start − electrode_row) / L_eff_px`, threshold 0.15 (self-consistent
   with the event detector).

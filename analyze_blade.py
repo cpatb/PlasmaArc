@@ -257,15 +257,26 @@ def midline_from_blades(blade_lines):
     bl = np.asarray(blade_lines, float)
     if bl.shape != (2, 2, 2):
         return None
-    M_top = 0.5 * (bl[0, 0] + bl[1, 0])
-    M_bot = 0.5 * (bl[0, 1] + bl[1, 1])
+    A0, A1 = bl[0, 0], bl[0, 1]
+    B0, B1 = bl[1, 0], bl[1, 1]
+    # Orient blade B the same way as blade A so the midline direction
+    # u = (dA + dB)/2 is the ANGLE bisector of the wedge — NOT the perpendicular
+    # bisector.  The stored endpoint order (the SVD sign in detect_blade_lines.py)
+    # is otherwise arbitrary and a mismatched sign would silently flip the
+    # midline.  Guard here so any blade_lines.npy (auto or hand-made) is safe.
+    dA = A1 - A0
+    dB = B1 - B0
+    if float(dA[0] * dB[0] + dA[1] * dB[1]) < 0.0:
+        B0, B1 = B1, B0
+    M_top = 0.5 * (A0 + B0)
+    M_bot = 0.5 * (A1 + B1)
     u = M_bot - M_top
     n = np.hypot(u[0], u[1])
     if n < 1e-9:
         return None
     u = u / n
     # signed offset of blade-A midpoint; sign chosen so A-side is positive
-    pA = 0.5 * (bl[0, 0] + bl[0, 1])
+    pA = 0.5 * (A0 + A1)
     dpA = pA - M_top
     offA = u[1] * dpA[0] - u[0] * dpA[1]
     sideA_sign = 1.0 if offA >= 0 else -1.0
@@ -416,7 +427,8 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
                    blade_lines=None,
                    elec_tol_px=ELEC_TOL_PX,
                    arc_direction='down',
-                   gap_row=None):
+                   gap_row=None,
+                   allow_tip_midline_fallback=False):
     H, W = raw.shape
     gray = raw.astype(np.float32)
     lo, hi = gray.min(), gray.max()
@@ -546,10 +558,16 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
         m['tortuosity'] = m['path_len_px'] / g
 
     # ── midline asymmetry ─────────────────────────────────────────────────────
-    # Fixed bisector of the two electrode lines when blade_lines is available;
-    # otherwise the perpendicular bisector of the two roots for this frame.
+    # The split midline MUST be the predefined bisector of the two BLADE
+    # electrodes (a fixed line per recording), so the A/B split is anchored on
+    # the geometry rather than on the arc itself.  When blade_lines is missing we
+    # do NOT silently substitute the per-frame perpendicular bisector of the two
+    # arc roots (that line wobbles frame-to-frame and is not the electrode
+    # bisector): the asymmetry/per-half-tortuosity metrics are left NaN instead.
+    # Pass allow_tip_midline_fallback=True only for exploratory use without a
+    # blade-line calibration, never for results.
     midline = midline_from_blades(blade_lines)
-    if midline is None:
+    if midline is None and allow_tip_midline_fallback:
         midline = midline_from_tips(ta, tb)
     asym = arc_asymmetry(coords, ta, tb, midline, px_per_mm)
     m.update(asym)
@@ -650,10 +668,12 @@ def main():
                     help="Fixed DN threshold: pixels above this are arc candidates "
                          "(default %d; replaces adaptive Otsu)" % DEFAULT_BRIGHT_THRESH)
     ap.add_argument('--min-arc-px',      type=int,   default=DEFAULT_MIN_ARC_PX,
-                    help="Minimum bright-pixel count to accept as a real arc. "
-                         "Defaults to electrode_gap_mm × px_per_mm × 2 = %d px — "
-                         "any detected blob smaller than the electrode gap is not a "
-                         "bridging arc." % DEFAULT_MIN_ARC_PX)
+                    help="Minimum bright-pixel AREA (px) to accept as a real arc. "
+                         "Default %d px = int(2.4 mm x 9.167 px/mm), frozen at the "
+                         "ADCB scale; at the 11MAY26 scale (8.8 px/mm) it is just a "
+                         "speckle/noise floor, NOT a 'spans the electrode gap' test "
+                         "(a 4-5 mm apex gap is ~40-44 px). Pass an explicit value to "
+                         "tie it to this recording's geometry." % DEFAULT_MIN_ARC_PX)
     ap.add_argument('--top-fraction',    type=float, default=DEFAULT_TOP_FRACTION,
                     help="Fraction of frame height used for electrode-tip search (default 0.25)")
     ap.add_argument('--arc-direction',   type=str,   default='down',

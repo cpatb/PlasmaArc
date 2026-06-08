@@ -139,6 +139,14 @@ def main():
 
     mA, dA, nA = tls_line(left)
     mB, dB, nB = tls_line(right)
+    # The TLS direction sign (from SVD) is arbitrary per blade.  Force the two
+    # blade directions to share an orientation so that downstream
+    # midline_from_blades (u = dA + dB) yields the ANGLE bisector of the wedge,
+    # not the perpendicular bisector.  Without this, a sign mismatch would
+    # silently flip the electrode midline used for the A/B asymmetry split.
+    if float(dA @ dB) < 0.0:
+        dB = -dB
+    assert float(dA @ dB) >= 0.0, "blade directions still anti-parallel after sign fix"
     ang = np.degrees(np.arccos(np.clip(abs(dA @ dB), -1, 1)))
 
     rmin = min(left[:, 0].min(), right[:, 0].min())

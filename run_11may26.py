@@ -79,8 +79,8 @@ ARC_DIRECTION = {
 # Read the row off the QA frames / blade_lines geometry for each recording.
 # CLI flags --gap-row-down / --gap-row-up override these.
 GAP_ROW = {
-    'downward': None,
-    'upward':   None,
+    'downward': 26,    # manually confirmed against QA frames
+    'upward':   241,   # manually confirmed against QA frames
 }
 
 # ── Conversion parameters ────────────────────────────────────────────────────
@@ -346,6 +346,13 @@ def main():
     ap.add_argument('--px-per-mm', type=float, default=PX_PER_MM)
     ap.add_argument('--frames-per-tiff', type=int, default=FRAMES_PER_TIFF,
                     help='Frames per TIFF chunk written by the conversion stage')
+    ap.add_argument('--local-vel-n', type=int, default=10,
+                    help='Sliding-window width (advancing-front frames) for the '
+                         'local OLS velocity in Stage 4 (event_velocity.py). '
+                         'N=10 (+/-5 neighbors) is the 11MAY26 canonical setting: '
+                         'it suppresses short-baseline spurious spikes that N=5 '
+                         'produced. Propagates to local_vel_ms and hence the 2-D '
+                         'velocity map and mode comparisons.')
     # Re-strike Mode A/B characterization (runs automatically in Stage 4).
     ap.add_argument('--restrike-method', choices=['abs', 'rel'], default='abs',
                     help='Mode A/B cut: abs=norm_pos, rel=retreat fraction')
@@ -453,8 +460,9 @@ def main():
             print('\n[STAGE 4]  Event detection + velocity (+ legacy per-event mode)')
             run([PLASMA_ARC / 'event_velocity.py',
                  str(merged_csv), str(out_root),
-                 '--px-per-mm', str(args.px_per_mm)],
-                label='event_velocity.py')
+                 '--px-per-mm', str(args.px_per_mm),
+                 '--local-vel-n', str(args.local_vel_n)],
+                label='event_velocity.py (local N=%d)' % args.local_vel_n)
 
             # Stage 4b: trustworthy, non-circular Mode A/B from re-strikes
             # (minima of the arc-tip trajectory). This is the authoritative
@@ -512,7 +520,8 @@ def main():
             # 6b. Paper figures (velmap figure now prefers velocity_map_local.npy)
             viz_cmd = [PLASMA_ARC / 'visualize_blade.py',
                        str(viz_csv), str(out_root),
-                       '--px-per-mm', str(args.px_per_mm)]
+                       '--px-per-mm', str(args.px_per_mm),
+                       '--arc-direction', arc_dir]
             if args.velmap_vmax is not None:
                 viz_cmd += ['--velmap-vmax', str(args.velmap_vmax)]
             run(viz_cmd, label='visualize_blade.py')
