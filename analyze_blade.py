@@ -133,21 +133,53 @@ def _dist_to_line(pt, p0, p1):
     return float(abs(np.cross(d / n, np.asarray(pt, float) - np.asarray(p0, float))))
 
 
-def _arc_complete_blade_lines(eps, blade_lines, tol_px):
+def _proj_param_px(pt, p0, p1):
+    """Signed arc-length (px) of pt's projection onto the line p0→p1, measured
+    from p0.  0 = at p0, L = at p1 (L = |p1−p0|).  Used for the finite-segment
+    (J-electrode) attachment gate."""
+    p0 = np.asarray(p0, float); p1 = np.asarray(p1, float)
+    d = p1 - p0
+    L = float(np.linalg.norm(d))
+    if L < 1e-9:
+        return 0.0, 0.0
+    t = float(np.dot(np.asarray(pt, float) - p0, d) / L)
+    return t, L
+
+
+def _on_segment(pt, p0, p1, margin_px):
+    """True if pt projects onto the finite segment p0–p1 (± margin_px past
+    either end)."""
+    t, L = _proj_param_px(pt, p0, p1)
+    return (-margin_px) <= t <= (L + margin_px)
+
+
+def _arc_complete_blade_lines(eps, blade_lines, tol_px,
+                              finite_segments=False, seg_margin_px=0.0):
     """
     Assign skeleton endpoints to blade A and blade B using perpendicular
     distance to each blade line.
 
     Parameters
     ----------
-    eps         : (N,2) array of skeleton endpoints [row, col]
-    blade_lines : (2,2,2) array  [blade_A, blade_B] × [pt0, pt1] × [row, col]
-    tol_px      : maximum perpendicular distance (px) to be considered attached
+    eps             : (N,2) array of skeleton endpoints [row, col]
+    blade_lines     : (2,2,2) array  [blade_A, blade_B] × [pt0, pt1] × [row, col]
+    tol_px          : maximum perpendicular distance (px) to be considered attached
+    finite_segments : J-electrode mode.  When True the two points of each blade
+                      are treated as the FINITE electrode segment (pt0 = tip-end
+                      near the apex, pt1 = far-end), and a foot only counts as
+                      attached if its perpendicular distance ≤ tol_px AND its
+                      projection falls within the segment (± seg_margin_px).
+                      This rejects a free arc tip that lies on the extrapolated
+                      blade line but BEYOND the physical electrode end.  When
+                      False (BLADE 11MAY26 default) the blades are infinite lines
+                      and only the perpendicular distance is used — behaviour is
+                      byte-for-byte unchanged.
+    seg_margin_px   : tolerance (px) past either clicked end (finite mode only).
 
     Returns
     -------
     ta, tb          : arrays (2,) — endpoint assigned to blade A and B
-    attached_a/b    : bool — True if within tol_px of respective blade
+    attached_a/b    : bool — True if attached to respective blade
     """
     if eps.shape[0] < 2:
         return None, None, False, False
@@ -155,6 +187,13 @@ def _arc_complete_blade_lines(eps, blade_lines, tol_px):
     bl_a, bl_b = blade_lines[0], blade_lines[1]
     dists_a = np.array([_dist_to_line(ep, bl_a[0], bl_a[1]) for ep in eps])
     dists_b = np.array([_dist_to_line(ep, bl_b[0], bl_b[1]) for ep in eps])
+
+    if finite_segments:
+        on_a = np.array([_on_segment(ep, bl_a[0], bl_a[1], seg_margin_px) for ep in eps])
+        on_b = np.array([_on_segment(ep, bl_b[0], bl_b[1], seg_margin_px) for ep in eps])
+    else:
+        on_a = np.ones(len(eps), bool)
+        on_b = np.ones(len(eps), bool)
 
     # Find the assignment of two distinct endpoints to (blade A, blade B) that
     # minimises the total perpendicular distance.
@@ -170,8 +209,8 @@ def _arc_complete_blade_lines(eps, blade_lines, tol_px):
                 best_score = score
                 ta        = eps[ia]
                 tb        = eps[ib]
-                att_a     = bool(dists_a[ia] <= tol_px)
-                att_b     = bool(dists_b[ib] <= tol_px)
+                att_a     = bool(dists_a[ia] <= tol_px and on_a[ia])
+                att_b     = bool(dists_b[ib] <= tol_px and on_b[ib])
     return ta, tb, att_a, att_b
 
 
@@ -428,6 +467,8 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
                    elec_tol_px=ELEC_TOL_PX,
                    arc_direction='down',
                    gap_row=None,
+                   finite_segments=False,
+                   seg_margin_px=0.0,
                    allow_tip_midline_fallback=False):
     H, W = raw.shape
     gray = raw.astype(np.float32)
@@ -525,7 +566,9 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
     # For direction='up' the electrodes are at the BOTTOM of the frame, so the
     # heuristic must search there instead of the top.
     if blade_lines is not None:
-        ta, tb, att_a, att_b = _arc_complete_blade_lines(eps, blade_lines, elec_tol_px)
+        ta, tb, att_a, att_b = _arc_complete_blade_lines(
+            eps, blade_lines, elec_tol_px,
+            finite_segments=finite_segments, seg_margin_px=seg_margin_px)
         arc_complete = att_a and att_b
     else:
         if arc_direction == 'up':
@@ -687,6 +730,16 @@ def main():
     ap.add_argument('--elec-tol-px',     type=int,   default=ELEC_TOL_PX,
                     help="Max perpendicular distance (px) from skeleton endpoint to blade "
                          "line to be considered attached (default %d)" % ELEC_TOL_PX)
+    ap.add_argument('--finite-segments', action='store_true',
+                    help="J-electrode geometry: treat each blade in blade_lines.npy as a "
+                         "FINITE segment (pt0 = tip-end near the apex, pt1 = far-end) "
+                         "rather than an infinite line.  A foot must project onto the "
+                         "segment (± --segment-margin-px) to count as attached, rejecting "
+                         "free tips that lie on the extrapolated line beyond the physical "
+                         "electrode end.  Off by default (BLADE infinite-blade behaviour).")
+    ap.add_argument('--segment-margin-px', type=float, default=6.0,
+                    help="Tolerance (px) past either clicked electrode end for the "
+                         "--finite-segments attachment gate (default 6).")
     ap.add_argument('--qa-interval',     type=int,   default=DEFAULT_QA_INTERVAL,
                     help="Save a QA frame every N frames (default 500)")
     ap.add_argument('--gap-row',         type=int,   default=None,
@@ -777,7 +830,9 @@ def main():
                                   blade_lines=blade_lines,
                                   elec_tol_px=elec_tol_px,
                                   arc_direction=arc_direction,
-                                  gap_row=args.gap_row)
+                                  gap_row=args.gap_row,
+                                  finite_segments=args.finite_segments,
+                                  seg_margin_px=args.segment_margin_px)
             meas_all[i] = m
             if m['arc_detected']:
                 tip_rows[i] = m['arc_tip_row']
@@ -843,7 +898,9 @@ def main():
                                   blade_lines=blade_lines,
                                   elec_tol_px=elec_tol_px,
                                   arc_direction=arc_direction,
-                                  gap_row=args.gap_row)
+                                  gap_row=args.gap_row,
+                                  finite_segments=args.finite_segments,
+                                  seg_margin_px=args.segment_margin_px)
             fig  = render_qa_frame(raw_qa, m_qa, fi, fps, px_per_mm, tip_vels[fi])
             fig.savefig(os.path.join(qa_dir,"qa_%06d.png"%fi),
                         dpi=120, bbox_inches='tight', facecolor='black')

@@ -135,6 +135,64 @@ python qa_flash.py --csv "$up\measurements_all_events.csv" --tiff-dir "$up\tiff"
 
 ---
 
+## 1J. J-electrode (CO₂) — analysed the *same way* as BLADE
+
+The J-electrode CO₂ recording (`…/J electrode arc/AD_Cer_1.2mmNozz_1500mL_(CO2).cine`,
+873,563 frames, 256×256, 200 kHz) is run through the **maintained BLADE stack**,
+not the legacy `run_j_pipeline.py`. The orchestrator `run_j_co2.py` imports and
+reuses `run_11may26.py`'s conversion / merge / subprocess helpers verbatim, so
+every stage (convert → analyze → merge → events → re-strike Mode A/B → Fourier →
+local-velocity map → figures) is the same code. Only the **reactor geometry**
+differs, and the J configuration specifies it explicitly:
+
+| Item | BLADE 11MAY26 | J-electrode |
+|---|---|---|
+| Electrodes | two long blades, ~47° full wedge | inverted-V razor blades, ~15° included |
+| Geometry source | `detect_blade_lines.py` (auto, **infinite** lines) | `calibrate_j_electrodes.py` (**interactive**, **finite** segments) |
+| Electrode ends | n/a (blades span the frame) | **specified** — tip-end + far-end per blade |
+| Minimum gap | n/a | **specified** — ~2.4 mm at the apex |
+| px/mm | 8.8 | 9.167 (or derived from the clicked min-gap) |
+| `gap_row` | hand-set (26 / 241) | derived from the clicked tip-ends |
+
+**Why a different geometry step.** BLADE blades are effectively infinite (the arc
+foot glides across the frame), so an extrapolated line is the electrode
+everywhere. J blades are short: a free arc tip can lie on the *extrapolated* blade
+line **beyond** the physical electrode and would be falsely called "complete".
+So the two clicked points per blade are stored as a **finite segment**
+(`pt0` = tip-end near the apex, `pt1` = far-end), and `analyze_blade.py
+--finite-segments` requires the arc foot to **project onto that segment**
+(± `--segment-margin-px`, default 6) in addition to the perpendicular-distance
+test. Clicking the two tip-ends also fixes the **minimum gap** (their pixel
+separation = 2.4 mm → px/mm) and the **gap-row** flash cutoff / Mode-A/B apex
+anchor (their mean row). All of this is written to `j_geometry.json`, which
+`run_j_co2.py` reads to thread `--blade-lines / --finite-segments / --gap-row /
+--px-per-mm` through the pipeline.
+
+**Run it:**
+
+```powershell
+cd "C:\Users\compl\Github\Plasma Arc"
+# 1) make a first chunk to calibrate on (smoke-test sized)
+python run_j_co2.py --from-stage convert --max-frames 10000
+# 2) click the four electrode ends — TIP-END FIRST per blade (A-tip, A-far, B-tip, B-far)
+$res = "$HOME\OneDrive\Desktop\J electrode arc\AD_Cer_1.2mmNozz_1500mL_(CO2)_results"
+python calibrate_j_electrodes.py --tiff "$res\tiff\AD_Cer_1.2mmNozz_1500mL_(CO2)_0001.tiff" `
+    --gap-mm 2.4 --arc-direction down
+# 3) run the rest of the pipeline
+python run_j_co2.py --from-stage analyze
+```
+
+`--bright-thresh` (default 80) is the one detection knob likely to need tuning for
+CO₂ vs N₂; check it with `mode_threshold_sweep.py` before a full run. The arc
+propagates **down** from the inverted-V (`--arc-direction down`). Budget: ~57 GB
+of intermediate TIFF for the full 873 k frames; use `--max-frames` to smoke-test.
+
+> The geometry math (min-gap → px/mm, gap-row, finite-segment attachment gate, and
+> the BLADE-path-unchanged regression) is unit-tested; the BLADE infinite-line
+> behaviour is byte-for-byte unchanged when `--finite-segments` is absent.
+
+---
+
 ## 2. Script map
 
 ### Pipeline (BLADE 11MAY26)
@@ -160,7 +218,14 @@ python qa_flash.py --csv "$up\measurements_all_events.csv" --tiff-dir "$up\tiff"
 | `mode_velocity_compare.py` | Local-velocity distribution shape + avg velocity, by mode × direction. |
 | `mode_arclength_compare.py` | Arc-length distribution + per-re-strike max length, by mode × direction. |
 
-### J-electrode / legacy (not modified this cycle)
+### J-electrode (CO₂) — maintained, BLADE-style path
+| Script | Role |
+|---|---|
+| `run_j_co2.py` | J orchestrator; reuses `run_11may26.py` stages, reads `j_geometry.json`. |
+| `calibrate_j_electrodes.py` | **Interactive** finite-blade + min-gap calibration (4 clicks, tip-end first). |
+| `analyze_blade.py --finite-segments` | Finite-segment attachment gate (J geometry; off = BLADE infinite lines). |
+
+### J-electrode / legacy (superseded by the above; not modified this cycle)
 `run_j_pipeline.py`, `run_pipeline.py`, `run_blade_analysis.py`, `blade_run2.py`,
 `analyze_tiff.py`, `analyze_cine.py`, `nucleation_tracker.py`, `velmap_cine.py`,
 `replot_velmap.py`, `fourier_analysis.py`, `visualize_cine.py`, `arc_shape.py`,
