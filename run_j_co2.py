@@ -235,7 +235,8 @@ def merge_csvs_fps(out_dirs, merged_csv, frames_per_tiff, recording_stem, fps):
 
 def write_run_metadata(out_root, cine_path, n_frames, H, W, fps,
                        px_per_mm, pxmm_src, bright_thresh, bt_src, max_arc_px,
-                       use_geom, gap_row, finite, seg_marg, blade_lines, args):
+                       use_geom, gap_row, finite, seg_marg, blade_lines, args,
+                       sigma_pxmm_rel=None, sigma_fps_rel=None):
     """Write run_metadata.json capturing every calibration/parameter actually
     used, plus the code version and timestamp, so each result is reproducible
     and self-documenting.  fourier_analysis.py already looks for a sibling
@@ -266,6 +267,8 @@ def write_run_metadata(out_root, cine_path, n_frames, H, W, fps,
         restrike_threshold=args.restrike_threshold,
         restrike_prominence_frac=args.restrike_prominence_frac,
         freq_max_hz=float(args.freq_max),
+        sigma_pxmm_rel=(None if sigma_pxmm_rel is None else float(sigma_pxmm_rel)),
+        sigma_fps_rel=(None  if sigma_fps_rel  is None else float(sigma_fps_rel)),
         code_version=code_version,
         written_utc=datetime.datetime.utcnow().isoformat(timespec='seconds') + 'Z',
     )
@@ -332,6 +335,13 @@ def main():
     ap.add_argument('--restrike-threshold', type=float, default=0.10)
     ap.add_argument('--restrike-prominence-frac', type=float, default=0.10)
     ap.add_argument('--velmap-vmax', type=float, default=None)
+    ap.add_argument('--pxmm-rel-err', type=float, default=None,
+                    help='Relative 1-sigma uncertainty on px/mm threaded into '
+                         'event_velocity. Default from uncertainty.py (5%%); '
+                         'override per-recording when hand-segmentation slop is known.')
+    ap.add_argument('--fps-rel-err', type=float, default=None,
+                    help='Relative 1-sigma uncertainty on fps threaded into '
+                         'event_velocity / fourier_analysis. Default 1e-3.')
     args = ap.parse_args()
 
     # ── resolve recording ────────────────────────────────────────────────────
@@ -467,7 +477,9 @@ def main():
             flash_arc_width=args.flash_arc_width, flash_eff_width=args.flash_eff_width)
         write_run_metadata(out_root, cine_path, n_frames, H, W, fps,
                            px_per_mm, pxmm_src, bright_thresh, bt_src, max_arc_px,
-                           use_geom, gap_row, finite, seg_marg, blade_lines, args)
+                           use_geom, gap_row, finite, seg_marg, blade_lines, args,
+                           sigma_pxmm_rel=args.pxmm_rel_err,
+                           sigma_fps_rel=args.fps_rel_err)
     else:
         chunk_dirs = [tiff_dir.parent / (Path(tp).stem + '_results') for tp in tiff_paths]
         print('[skip] analyze  (px/mm=%.4f from %s)' % (px_per_mm, pxmm_src))
@@ -492,6 +504,10 @@ def main():
             ev_cmd += ['--flash-arc-width', str(args.flash_arc_width)]
         if args.flash_eff_width is not None:
             ev_cmd += ['--flash-eff-width', str(args.flash_eff_width)]
+        if args.pxmm_rel_err is not None:
+            ev_cmd += ['--pxmm-rel-err', str(args.pxmm_rel_err)]
+        if args.fps_rel_err is not None:
+            ev_cmd += ['--fps-rel-err',  str(args.fps_rel_err)]
         run(ev_cmd, label='event_velocity.py (local N=%d)' % args.local_vel_n)
         event_csv = out_root / 'measurements_all_events.csv'
         if event_csv.exists():

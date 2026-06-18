@@ -46,7 +46,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-import arc_filter  # single source of truth for flash / validity criteria
+import arc_filter   # single source of truth for flash / validity criteria
+import uncertainty  # systematic + statistical velocity uncertainty propagation
 
 # ---
 # Configuration
@@ -54,6 +55,12 @@ import arc_filter  # single source of truth for flash / validity criteria
 
 FPS    = 200_000   # frames per second
 PX_PER_MM = 9.167  # px/mm, BLADE calibration
+# Relative 1-sigma calibration uncertainties (CLI-overridable). Defaults come
+# from uncertainty.py and are folded into vel_ms_err_total alongside the OLS
+# slope statistical error. The legacy vel_ms_err column is preserved
+# (statistical only) for backwards compatibility.
+SIGMA_FPS_REL  = uncertainty.SIGMA_FPS_REL
+SIGMA_PXMM_REL = uncertainty.SIGMA_PXMM_REL
 # No velocity cap: flashes are rejected at the frame level via arc_filter
 # (width-based is_flash + electrode-gap cutoff), not by clipping velocities.
 
@@ -284,8 +291,9 @@ def fit_events(df, electrode_info=None):
         # standard error of the OLS slope:
         #   SE(slope) = sqrt( SS_res/(n-2) / Sxx ),  Sxx = sum((f - f_mean)^2)
         # propagated through the same px/frame -> m/s conversion as vel_ms.
-        # This is the random fitting error only (it does NOT include the
-        # systematic px/mm or fps calibration uncertainty).
+        # The legacy vel_ms_err column is this statistical-only value, kept
+        # for backwards compatibility. The authoritative error to quote is
+        # vel_ms_err_total below (stat + px/mm sys + fps sys in quadrature).
         n_pts = len(f_front)
         sxx   = float(np.sum((f_front - f_front.mean()) ** 2))
         if n_pts > 2 and sxx > 0:
@@ -293,6 +301,16 @@ def fit_events(df, electrode_info=None):
             vel_ms_err = slope_se * FPS / PX_PER_MM / 1000
         else:
             vel_ms_err = np.nan
+        # Full budget: stat (slope SE) + sys (px/mm calibration + fps).
+        # The two systematics are coherent across events from the same
+        # recording (one calibration applies to all); we report them per
+        # event here, but reynolds_comparison.py / Re-axis aggregations must
+        # NOT average them down by sqrt(N).
+        vel_ms_err_stat  = vel_ms_err if np.isfinite(vel_ms_err) else 0.0
+        vel_ms_err_sys   = float(np.sqrt(
+            (vel_ms * SIGMA_PXMM_REL) ** 2 + (vel_ms * SIGMA_FPS_REL) ** 2))
+        vel_ms_err_total = float(np.sqrt(
+            vel_ms_err_stat ** 2 + vel_ms_err_sys ** 2))
 
         if used_complete:
             n_complete_used += 1
@@ -309,9 +327,12 @@ def fit_events(df, electrode_info=None):
             'n_frames_front':  len(front),
             'used_complete':   int(used_complete),
             'sub_event_count': sub_count,
-            'vel_ms':          round(vel_ms, 4),
-            'vel_ms_err':      round(vel_ms_err, 4) if np.isfinite(vel_ms_err) else np.nan,
-            'r2':              round(r2, 4),
+            'vel_ms':            round(vel_ms, 4),
+            'vel_ms_err':        round(vel_ms_err, 4) if np.isfinite(vel_ms_err) else np.nan,
+            'vel_ms_err_stat':   round(vel_ms_err_stat, 4),
+            'vel_ms_err_sys':    round(vel_ms_err_sys, 4),
+            'vel_ms_err_total':  round(vel_ms_err_total, 4),
+            'r2':                round(r2, 4),
             'tip_row_start':   round(float(r_front[0]), 2),
             'tip_row_end':     round(float(r_front[-1]), 2),
             'extension_px':    round(float(r_front.max() - r_front.min()), 2),
@@ -687,6 +708,12 @@ def print_summary(events):
         if np.isfinite(med_err):
             print(f"  Median fit 1σ err  : {med_err:.3f} m/s "
                   f"(random OLS-slope error per event; excludes px/mm & fps systematics)")
+    if 'vel_ms_err_total' in events.columns:
+        med_tot = events.loc[events['vel_ms'] > 0, 'vel_ms_err_total'].median()
+        med_sys = events.loc[events['vel_ms'] > 0, 'vel_ms_err_sys'].median()
+        if np.isfinite(med_tot):
+            print(f"  Median total 1σ    : {med_tot:.3f} m/s "
+                  f"(stat ⊕ px/mm ⊕ fps; sys median = {med_sys:.3f} m/s)")
 
     r2_good = (events['r2'] >= 0.5).sum()
     print(f"  Events R²≥0.5      : {r2_good} ({100*r2_good/max(len(events),1):.0f}%)")
@@ -1055,6 +1082,7 @@ def main():
     # strings below (and reassigned after parsing), so the declaration must
     # precede their first use in this function.
     global PX_PER_MM, FPS, LOCAL_VEL_N, FLASH_ARC_WIDTH, FLASH_EFF_WIDTH
+    global SIGMA_PXMM_REL, SIGMA_FPS_REL
     import argparse
     ap = argparse.ArgumentParser(description='Event velocity — advancing-front regression')
     ap.add_argument('csv',         nargs='?', default=None,
@@ -1081,7 +1109,21 @@ def main():
     ap.add_argument('--flash-eff-width', type=float, default=None,
                     help='eff-width (area/length, px) above which a frame is a flash. '
                          'Default %.0f.' % FLASH_EFF_WIDTH)
+    ap.add_argument('--pxmm-rel-err', type=float, default=None,
+                    help='Relative 1-sigma uncertainty on px/mm (default %.4f). Folded '
+                         'into vel_ms_err_total. Override per-recording when the apex-gap '
+                         'calibration has known anisotropy or hand-segmentation slop.'
+                         % SIGMA_PXMM_REL)
+    ap.add_argument('--fps-rel-err', type=float, default=None,
+                    help='Relative 1-sigma uncertainty on fps (default %.5f). '
+                         'Phantom HS crystal stability is ~50-100 ppm but trig-mode '
+                         'rounding can be larger; conservative default 1e-3.'
+                         % SIGMA_FPS_REL)
     args = ap.parse_args()
+    if args.pxmm_rel_err is not None:
+        SIGMA_PXMM_REL = float(args.pxmm_rel_err)
+    if args.fps_rel_err is not None:
+        SIGMA_FPS_REL  = float(args.fps_rel_err)
     if args.flash_arc_width is not None:
         FLASH_ARC_WIDTH = args.flash_arc_width
     if args.flash_eff_width is not None:
@@ -1117,6 +1159,8 @@ def main():
     print(f"  px/mm      : {PX_PER_MM:.4f}")
     print(f"  FPS        : {FPS:.0f}")
     print(f"  local N    : {LOCAL_VEL_N}  (+/-{LOCAL_VEL_N // 2} advancing-front neighbors)")
+    print(f"  sigma_pxmm : {SIGMA_PXMM_REL*100:.2f}%  (relative)")
+    print(f"  sigma_fps  : {SIGMA_FPS_REL*100:.3f}%  (relative)")
     print(f"{'=' * 55}\n")
 
     df                 = load(csv_path)

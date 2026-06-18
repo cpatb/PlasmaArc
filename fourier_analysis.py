@@ -27,7 +27,8 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from scipy.signal import find_peaks
 
-import arc_filter  # single source of truth for flash / validity criteria
+import arc_filter   # single source of truth for flash / validity criteria
+import uncertainty  # frequency uncertainty (fps-only systematic)
 
 # =============================================================================
 # CONFIG
@@ -35,6 +36,10 @@ import arc_filter  # single source of truth for flash / validity criteria
 
 FPS       = 200_000    # frames per second
 PX_PER_MM = 9.167      # BLADE default — overridden by metadata.txt when present
+# Relative 1-sigma uncertainty on fps (folded into the annotated peak labels).
+# A reported FFT frequency f has sigma_f = f * SIGMA_FPS_REL (px/mm doesn't
+# enter — FFT frequency is k*fps/N, no spatial calibration involved).
+SIGMA_FPS_REL = uncertainty.SIGMA_FPS_REL
 
 # Frequency range to display in plots (Hz)
 FREQ_MIN  = 0
@@ -156,8 +161,12 @@ def label_peaks(ax, freqs, power):
     top_n = np.argsort(power[peaks])[-N_PEAKS:][::-1]
     for idx in top_n:
         pk = peaks[idx]
-        ax.annotate(f'{freqs[pk]:.1f} Hz',
-                    xy=(freqs[pk], power[pk]),
+        f  = float(freqs[pk])
+        # 1-sigma fps-only systematic; px/mm is not involved in FFT
+        # frequency (k*fps/N), so the budget reduces to sigma_f = f * sigma_fps_rel.
+        sf = f * SIGMA_FPS_REL
+        ax.annotate(f'{f:.1f} ± {sf:.2f} Hz',
+                    xy=(f, power[pk]),
                     xytext=(0, 10), textcoords='offset points',
                     ha='center', fontsize=8,
                     arrowprops=dict(arrowstyle='->', lw=0.7, color='#555'))
