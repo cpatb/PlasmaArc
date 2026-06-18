@@ -153,10 +153,56 @@ def run_analyze_blade(tiff_path, out_dir, fps, px_per_mm, bright_thresh,
         raise RuntimeError(f'analyze_blade.py failed on {tiff_path.name}')
 
 
+def _classify_restrikes(frames, tip, ext_prom_frac=0.10, smooth=3,
+                         min_cycle_frames=5, abs_threshold=0.10):
+    """Replicate qa_restrike.py's re-strike detection + classification on one
+    chunk's tip-row series. This is the AUTHORITATIVE Mode A/B classifier:
+    a re-strike is each local MINIMUM between two consecutive prominent local
+    MAXIMA (extensions) of the tip trajectory. Mode B if the re-strike sits
+    above ``abs_threshold * l_eff`` from the apex.
+
+    Returns (n_A, n_B, n_total, mode_B_fraction, SE_mode_B).
+    """
+    from scipy.signal import find_peaks
+    from scipy.ndimage import uniform_filter1d
+
+    if len(tip) < 10:
+        return 0, 0, 0, float('nan'), float('nan')
+    sig = tip.astype(float)
+    if smooth > 1:
+        sig = uniform_filter1d(sig, size=int(smooth))
+    # Apex = 5th percentile of tip-row, l_eff = p90 - apex (same as qa_restrike).
+    apex   = float(np.percentile(tip, 5))
+    l_eff  = max(float(np.percentile(tip, 90)) - apex, 1.0)
+    ext_prom = max(ext_prom_frac * l_eff, 1.0)
+    peaks, _ = find_peaks(sig, prominence=ext_prom,
+                          distance=max(int(min_cycle_frames), 1))
+    if len(peaks) < 2:
+        return 0, 0, 0, float('nan'), float('nan')
+
+    n_A = 0; n_B = 0
+    for i in range(1, len(peaks)):
+        a, b = peaks[i - 1], peaks[i]
+        k = a + int(np.argmin(sig[a:b + 1]))
+        npos = float(np.clip((tip[k] - apex) / l_eff, 0.0, 1.0))
+        if npos > abs_threshold:
+            n_B += 1
+        else:
+            n_A += 1
+    n_tot = n_A + n_B
+    if n_tot == 0:
+        return 0, 0, 0, float('nan'), float('nan')
+    p_B = n_B / n_tot
+    SE  = float(np.sqrt(p_B * (1.0 - p_B) / n_tot))
+    return n_A, n_B, n_tot, p_B, SE
+
+
 def inline_event_stats(meas_csv, fps, px_per_mm):
     """Replicate the advancing-front event regression from event_velocity.py
-    on a single chunk's measurements.csv. Returns median vel_ms and a few
-    summary stats used by the probe figure."""
+    on a single chunk's measurements.csv, AND the re-strike Mode A/B
+    classification from qa_restrike.py. Returns median vel_ms, mode_B
+    fraction (authoritative — NOT the legacy event-start classifier), and
+    the per-frame asymmetry summary used by the probe figure."""
     NUCLEATION_SLACK_FRAC = 0.15
     MIN_EVENT_FRAMES = 5
 
@@ -166,7 +212,8 @@ def inline_event_stats(meas_csv, fps, px_per_mm):
     if len(df) == 0:
         return dict(n_valid_frames=0, n_events_fitted=0,
                     median_v_ms=float('nan'), SE_median_v=float('nan'),
-                    mode_A_frac=float('nan'), SE_modeA=float('nan'),
+                    n_restrikes=0, n_modeA=0, n_modeB=0,
+                    mode_B_frac=float('nan'), SE_modeB=float('nan'),
                     median_arclen_asym=float('nan'), SE_arclen_asym=float('nan'),
                     median_abs_arclen_asym=float('nan'),
                     detection_rate=0.0)
@@ -178,7 +225,7 @@ def inline_event_stats(meas_csv, fps, px_per_mm):
     full_range    = max(typical_max - electrode_row, 1.0)
     nucl_thresh   = electrode_row + NUCLEATION_SLACK_FRAC * full_range
 
-    # event ids
+    # ── event ids (matches event_velocity.assign_events) ─────────────────
     eids = [0]; eid = 0
     for k in range(1, len(frames)):
         gap = frames[k] - frames[k-1]
@@ -187,8 +234,8 @@ def inline_event_stats(meas_csv, fps, px_per_mm):
         eids.append(eid)
     eids = np.array(eids)
 
+    # ── advancing-front event regression (velocity) ──────────────────────
     vels = []
-    norm_nucleation = []
     for e in np.unique(eids):
         f = frames[eids == e]; r = rows[eids == e]
         keep = []; m = -np.inf
@@ -199,23 +246,18 @@ def inline_event_stats(meas_csv, fps, px_per_mm):
         slope, _ = np.polyfit(f2, r2, 1)
         v_ms = slope * fps / px_per_mm / 1000.0
         if v_ms > 0: vels.append(v_ms)
-        norm_nucleation.append(
-            (float(r2[0]) - electrode_row) / full_range)
-
     vels = np.array(vels)
-    nn   = np.array(norm_nucleation)
     n_events_fitted = len(vels)
     median_v = float(np.median(vels)) if len(vels) else float('nan')
     SE_med_v = (1.253 * float(np.std(vels, ddof=1)) / np.sqrt(len(vels))
                 if len(vels) > 1 else float('nan'))
 
-    if len(nn) > 0:
-        n_a = int((nn <= NUCLEATION_SLACK_FRAC).sum())
-        n_t = int(len(nn))
-        modeA = n_a / n_t
-        SE_mA = float(np.sqrt(modeA * (1 - modeA) / n_t)) if n_t > 1 else float('nan')
-    else:
-        modeA = float('nan'); SE_mA = float('nan')
+    # ── re-strike Mode A/B (AUTHORITATIVE — qa_restrike.py logic) ────────
+    # Anchored on prominent extensions; the re-strike is the local minimum
+    # between consecutive extensions. Picks up Mode-B back-breakdowns the
+    # legacy event-start classifier MISSES because they happen inside an
+    # ongoing event without the tip returning to the gap.
+    n_A, n_B, n_tot, p_B, SE_B = _classify_restrikes(frames, rows)
 
     asym_series = pd.to_numeric(df.get('arclen_asym'), errors='coerce').dropna()
     if len(asym_series) >= 30:
@@ -228,7 +270,8 @@ def inline_event_stats(meas_csv, fps, px_per_mm):
     return dict(n_valid_frames=int(len(df)),
                 n_events_fitted=n_events_fitted,
                 median_v_ms=median_v, SE_median_v=SE_med_v,
-                mode_A_frac=modeA, SE_modeA=SE_mA,
+                n_restrikes=int(n_tot), n_modeA=int(n_A), n_modeB=int(n_B),
+                mode_B_frac=p_B, SE_modeB=SE_B,
                 median_arclen_asym=med_a, SE_arclen_asym=SE_med,
                 median_abs_arclen_asym=med_aa,
                 detection_rate=float(len(df)) /
@@ -259,11 +302,11 @@ def verdict(stats_df):
         return 'UNRELIABLE', per_metric
     out = {}
     for key, label in [('median_v_ms',           'median event velocity (m/s)'),
-                        ('mode_A_frac',          'Mode A fraction'),
+                        ('mode_B_frac',          'Mode B re-strike fraction'),
                         ('median_abs_arclen_asym','|median arclen_asym|')]:
         vals = stats_df[key].to_numpy(dtype=float)
         SE_col = {'median_v_ms': 'SE_median_v',
-                  'mode_A_frac': 'SE_modeA',
+                  'mode_B_frac': 'SE_modeB',
                   'median_abs_arclen_asym': 'SE_arclen_asym'}[key]
         SEs  = stats_df[SE_col].to_numpy(dtype=float)
         if np.isfinite(vals).sum() < 2 or np.isfinite(SEs).sum() < 1:
@@ -402,7 +445,8 @@ def main():
         rows.append(st)
         print(f'     n_events={st["n_events_fitted"]}  '
               f'median_v={st["median_v_ms"]:.2f}±{st["SE_median_v"]:.2f} m/s  '
-              f'ModeA={st["mode_A_frac"]:.3f}  '
+              f'restrikes: A={st["n_modeA"]} B={st["n_modeB"]} '
+              f'(B-frac={st["mode_B_frac"]:.3f}±{st["SE_modeB"]:.3f})  '
               f'|asym|={st["median_abs_arclen_asym"]:.3f}')
 
     df = pd.DataFrame(rows)
@@ -427,8 +471,8 @@ def main():
         ax.grid(alpha=0.3)
     panel(axes[0], 'median_v_ms', 'SE_median_v',
            'Median event velocity (m/s)', 'median_v_ms')
-    panel(axes[1], 'mode_A_frac', 'SE_modeA',
-           'Mode A fraction (event-start)', 'mode_A_frac')
+    panel(axes[1], 'mode_B_frac', 'SE_modeB',
+           'Mode B re-strike fraction', 'mode_B_frac')
     panel(axes[2], 'median_abs_arclen_asym', 'SE_arclen_asym',
            '|median arclen_asym|', 'median_abs_arclen_asym')
     axes[0].legend(frameon=False, fontsize=8, loc='best')
@@ -443,8 +487,10 @@ def main():
     cap = (
         f'Three-chunk probe across a long .cine, comparing the three headline '
         f'metrics that would drive a "process the whole file" decision: median '
-        f'event velocity, Mode A fraction (event-start classifier from '
-        f'norm_nucleation_pos), and median |arclen_asym| (left-right arc '
+        f'event velocity, Mode B re-strike fraction (authoritative classifier '
+        f'from qa_restrike.py -- detects every re-strike as a local minimum '
+        f'between two prominent extensions, NOT the Mode-A-biased '
+        f'event-start classifier), and median |arclen_asym| (left-right arc '
         f'symmetry).\n\n'
         f'Per-metric verdict: ratio of max-min spread to the mean per-chunk SE. '
         f'>3 sigma = clear drift signal (GO); 1-3 = ambiguous (CONSIDER); '
