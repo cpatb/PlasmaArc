@@ -63,6 +63,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 import figstyle
+import sweep_utils
 
 
 # CO2 properties at room conditions (T = 295.15 K, P = 101.325 kPa)
@@ -305,11 +306,10 @@ def main():
     out_dir = Path(args.out) if args.out else (root / 'Reynolds_comparison')
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    targets = sorted(d for d in root.glob('*_results')
-                     if d.is_dir() and not d.name.endswith('_chunked_results'))
-    targets = [d for d in targets
-               if (d / 'event_summary.csv').exists()
-               or (d / 'event_summary_with_unc.csv').exists()]
+    targets = [d for d in sweep_utils.iter_sweep_dirs(root)
+               if not d.name.endswith('_chunked_results')
+               and ((d / 'event_summary.csv').exists()
+                    or (d / 'event_summary_with_unc.csv').exists())]
     print(f"reynolds_comparison: {len(targets)} recording(s)")
 
     rows = []

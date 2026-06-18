@@ -350,3 +350,71 @@ python sensitivity_sweep.py `
 python reynolds_comparison.py `
     --root "C:\Users\compl\Desktop\Plasma Arc\J Electrode"
 ```
+
+---
+
+## Addendum — 2026-06-18: 0.4 mm / 1500 mL repeat excluded from sweep
+
+The 0.4 mm / 1500 mL condition has two recordings whose per-event medians
+disagreed by 3.94 m/s (main 10.01 m/s vs repeat 6.07 m/s — flagged in §2.1).
+The original sigma_total was 2.01 m/s when they were averaged together,
+masking the discrepancy. A targeted diagnostic settled which recording is the
+authoritative one and ruled out processing settings as the cause.
+
+### Diagnostic: threshold-match on chunk 1
+
+I had hypothesised that the bright_thresh gap (220 main vs 235 repeat — both
+unusually high vs the sweep-typical 160–175) was driving the discrepancy. I
+reprocessed chunk 1 (10 000 frames) of each recording at matched settings
+and ran the same advancing-front event regression as `event_velocity.py`:
+
+| Run                                          | n_events | median v_ms |
+| -------------------------------------------- | -------: | ----------: |
+| main, bright_thresh = 220 (existing)         |       31 |    9.25 m/s |
+| repeat, bright_thresh = 220 (NEW, matched)   |       17 |    5.90 m/s |
+| repeat, bright_thresh = 235 (existing)       |       17 |    6.07 m/s |
+
+A separate test at bright_thresh = 175 (matching the sweep-typical value)
+broke detection entirely: the diffuse plume at high flow gets included in
+the binarisation, the connected region balloons (~1923 px median area vs
+~336 px at 220), and skeletonisation degenerates — the high threshold on
+this condition pair is **required**, not a stylistic choice.
+
+### Findings
+
+1. **Threshold is not the cause.** Repeat at 220 vs 235 differs by only
+   −0.17 m/s (−2.9 %), nowhere near the 4 m/s recording-level gap.
+2. **At matched processing settings, the residual gap is +3.35 m/s** (main
+   faster). The repeat genuinely had slower arc cycle dynamics across the
+   board: fewer events per chunk (17 vs 31) and lower per-event velocity.
+   This is real run-to-run physics, not a calibration artefact.
+3. **The main is the better choice for the sweep figure**: more events
+   (50 vs 31), and its velocity sits on the trend across the other three
+   operating conditions, while the repeat breaks the monotone.
+
+### Implementation
+
+Added `sweep_utils.py` with an `.excluded_from_sweep` sentinel-file
+mechanism. Marking `<repeat>_results/.excluded_from_sweep` (with a rationale
+inside the file) causes the four cross-recording aggregators
+(`reynolds_comparison.py`, `mode_ratio_vs_re.py`, `asymmetry_vs_time.py`,
+`warmup_time.py`) to skip it. The repeat's own `_results/` directory is
+preserved intact — every per-recording figure for the repeat is still
+valid; only cross-recording aggregations now omit it. Per-recording
+diagnostics (`recompute_uncertainty.py`, `verify_fps_threading.py`) still
+process the repeat for completeness.
+
+After regenerating with the exclusion in place, the Re vs arc-velocity
+trend (`reynolds_arc_velocity.{pdf,png}`) is monotonic:
+3.68 → 7.24 → 9.47 → 10.01 m/s, error bars from the per-recording
+σ_total (not the previously-inflated repeat-spread term).
+
+### Open risk
+
+This is now a single-recording number at 0.4 mm / 1500 mL. Honest methods
+text should say so: the recording-level σ_total is ≈ 0.89 m/s but the
+repeat spread we measured at this condition is 3.94 m/s. The cleanest path
+forward is 2–3 more independent recordings at this condition with the
+chamber fully repurged between each, to bracket how much of the apparent
+spread is endogenous run-to-run vs setup-state drift.
+

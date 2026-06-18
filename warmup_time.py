@@ -39,6 +39,7 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 
 import figstyle
+import sweep_utils
 
 
 def _expo(t, v_inf, dv, tau):
@@ -335,7 +336,7 @@ def main():
         out_dir = Path(args.out) if args.out else Path(args.results)
     else:
         root = Path(args.root)
-        targets = sorted(d for d in root.glob('*_results') if d.is_dir())
+        targets = list(sweep_utils.iter_sweep_dirs(root))
         out_dir = Path(args.out) if args.out else (root / 'Reynolds_comparison')
     out_dir.mkdir(parents=True, exist_ok=True)
 

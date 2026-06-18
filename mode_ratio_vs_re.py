@@ -31,6 +31,7 @@ import matplotlib.pyplot as plt
 
 import figstyle
 import reynolds_comparison as rc
+import sweep_utils
 
 
 _PALETTE_D = {0.4: '#00204d', 0.8: '#5d7588', 1.2: '#fde725'}
@@ -126,8 +127,8 @@ def main():
     out_dir = Path(args.out) if args.out else (root / 'Reynolds_comparison')
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    targets = sorted(d for d in root.glob('*_results') if d.is_dir()
-                     and (d / 're_strikes_qa.csv').exists())
+    targets = [d for d in sweep_utils.iter_sweep_dirs(root)
+               if (d / 're_strikes_qa.csv').exists()]
     rows = []
     for d in targets:
         r = per_recording_row(d, args.sigma_d_rel, args.sigma_q_rel)

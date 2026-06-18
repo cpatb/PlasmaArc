@@ -42,6 +42,7 @@ import matplotlib.pyplot as plt
 import arc_filter
 import figstyle
 import reynolds_comparison as rc
+import sweep_utils
 
 BIAS_THRESHOLD = 0.2          # |arclen_asym| above this counts as "biased"
 RUNNING_WINDOW_FRAMES = 2001  # ~10 ms at 200 kHz; broad enough to smooth out
@@ -276,7 +277,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rows = []
-    for d in sorted(rd for rd in root.glob('*_results') if rd.is_dir()):
+    for d in sweep_utils.iter_sweep_dirs(root):
         df, meta = load_valid(d)
         if df is None or meta is None:
             print(f"  [skip] {d.name}: no measurements / metadata / asymmetry col")
