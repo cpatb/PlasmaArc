@@ -39,6 +39,16 @@ def apply():
     })
 
 
+def _ext_paths(stem, out_dir=None):
+    """Append .pdf/.png/.txt to ``stem`` literally (NOT via with_suffix, which
+    breaks on stems containing dots like ``warmup_fit_HS_0.4mm_...``)."""
+    p = Path(stem)
+    if out_dir is not None:
+        p = Path(out_dir) / p.name
+    base = str(p)
+    return Path(base + '.pdf'), Path(base + '.png'), Path(base + '.txt')
+
+
 def save(fig, stem, caption, out_dir=None):
     """Write ``<stem>.pdf``, ``<stem>.png``, and ``<stem>.txt`` (caption sidecar).
 
@@ -46,20 +56,17 @@ def save(fig, stem, caption, out_dir=None):
     ----------
     fig : matplotlib Figure
     stem : str
-        Filename without extension (or absolute path without extension).
+        Filename without extension (or absolute path without extension). May
+        contain dots — they are preserved literally (NOT treated as a
+        suffix), unlike ``Path.with_suffix``.
     caption : str
         Multi-line caption written verbatim to ``<stem>.txt``.
     out_dir : str | Path | None
         Where to put the files. If None and ``stem`` is absolute, uses that
         directory; otherwise cwd.
     """
-    p = Path(stem)
-    if out_dir is not None:
-        p = Path(out_dir) / p.name
-    p.parent.mkdir(parents=True, exist_ok=True)
-    pdf = p.with_suffix('.pdf')
-    png = p.with_suffix('.png')
-    txt = p.with_suffix('.txt')
+    pdf, png, txt = _ext_paths(stem, out_dir)
+    pdf.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(pdf)
     fig.savefig(png)
     txt.write_text(caption.strip() + '\n', encoding='utf-8')
@@ -69,10 +76,7 @@ def save(fig, stem, caption, out_dir=None):
 
 def verify(stem, out_dir=None):
     """Assert that the three sidecar files exist and the PNG is non-empty."""
-    p = Path(stem)
-    if out_dir is not None:
-        p = Path(out_dir) / p.name
-    pdf = p.with_suffix('.pdf'); png = p.with_suffix('.png'); txt = p.with_suffix('.txt')
+    pdf, png, txt = _ext_paths(stem, out_dir)
     assert pdf.exists() and pdf.stat().st_size > 0, pdf
     assert png.exists() and png.stat().st_size > 0, png
     assert txt.exists() and txt.stat().st_size > 0, txt
