@@ -196,6 +196,13 @@ def main():
     print(f"  KS test on raw local-vel samples: D={ks.statistic:.3f}  "
           f"p={ks.pvalue:.3g}  "
           f"(small p => significantly different distributions)")
+    # Single-line machine-parseable row for cross-recording aggregation.
+    print(f"  RESULT  recording={meta['recording']}  n_events={args.n_events}  "
+          f"n_qualifying={len(q)}  "
+          f"med_first={np.median(fv):.4f}  med_last={np.median(lv):.4f}  "
+          f"delta_med={delta_med:+.4f}  sigma_sys={sigma_sys:.4f}  "
+          f"KS_D={ks.statistic:.4f}  KS_p={ks.pvalue:.6g}  "
+          f"n_obs_first={len(fv)}  n_obs_last={len(lv)}")
 
     fig.suptitle(f'Temporal effects on propagation velocity — {results.name}',
                   fontsize=11, y=1.02)
@@ -224,7 +231,7 @@ def main():
             f'within a recording, so it CANCELS in the first-vs-last difference. '
             f'For drift, use the statistical / repeat spread, NOT sigma_sys.'
         ))
-    stem = results / 'temporal_profiles'
+    stem = results / f'temporal_profiles_n{args.n_events}'
     figstyle.save(fig, str(stem), cap)
     figstyle.verify(str(stem))
 
@@ -240,7 +247,7 @@ def main():
             'p90_vel_ms':  p90,
             'n_obs':       n,
         })
-    out_csv = results / 'temporal_profiles_summary.csv'
+    out_csv = results / f'temporal_profiles_summary_n{args.n_events}.csv'
     pd.concat([_to_df('first', first_bins, first_ids),
                _to_df('last',  last_bins,  last_ids)],
               ignore_index=True).to_csv(out_csv, index=False)
