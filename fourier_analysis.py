@@ -250,7 +250,7 @@ def print_peak_table(freqs, power, label, n=5):
 # =============================================================================
 
 def main():
-    global PX_PER_MM, FPS
+    global PX_PER_MM, FPS, FREQ_MIN, FREQ_MAX
     import argparse
     ap = argparse.ArgumentParser(description='Fourier analysis of arc dynamics')
     ap.add_argument('csv',         nargs='?', default=None,
@@ -262,6 +262,14 @@ def main():
                          'module default %.4f)' % PX_PER_MM)
     ap.add_argument('--fps',       type=float, default=None,
                     help='Frame rate in Hz (default: %d)' % FPS)
+    ap.add_argument('--freq-min',  type=float, default=None,
+                    help='Low edge of the displayed/analysed spectrum in Hz (default %g).'
+                         % FREQ_MIN)
+    ap.add_argument('--freq-max',  type=float, default=None,
+                    help='High edge of the displayed spectrum in Hz (default %g, tuned for '
+                         '50 Hz mains harmonics). The J gliding-arc CYCLE is kHz-scale, so '
+                         'raise this (e.g. 20000) to see the cycle peak — run_j_co2.py does.'
+                         % FREQ_MAX)
     ap.add_argument('--mode-csv',  default=None,
                     help='Optional CSV with cycle_mode column for mode-stratified FFT '
                          '(e.g. measurements_all_events.csv).  If the main CSV already '
@@ -270,6 +278,10 @@ def main():
 
     if args.fps is not None:
         FPS = args.fps
+    if args.freq_min is not None:
+        FREQ_MIN = args.freq_min
+    if args.freq_max is not None:
+        FREQ_MAX = args.freq_max
 
     script_dir = Path(__file__).parent.resolve()
     csv_path   = Path(args.csv) if args.csv else script_dir / 'measurements_all.csv'

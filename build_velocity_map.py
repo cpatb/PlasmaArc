@@ -239,9 +239,18 @@ def main():
     ap.add_argument('--out-dir', help='output dir [build mode]')
     ap.add_argument('--px-per-mm', type=float, default=8.8)
     ap.add_argument('--fps', type=float, default=FPS_DEFAULT)
-    ap.add_argument('--thresh', type=int, default=100)
+    ap.add_argument('--thresh', type=int, default=100,
+                    help='DN threshold for RE-binarising frames to paint velocity onto. '
+                         'MUST match the analyze stage (run_j_co2 passes the per-recording '
+                         'bright_thresh) or the wrong pixels are painted / the high-flow '
+                         'plume blob is rejected and the map comes out empty.')
     ap.add_argument('--close-radius', type=int, default=3)
     ap.add_argument('--min-arc-px', type=int, default=22)
+    ap.add_argument('--max-arc-px', type=int, default=3000,
+                    help='Max arc AREA (px) for re-binarisation — MUST match the analyze '
+                         'stage. The BLADE default 3000 rejects the bright high-flow CO2 '
+                         'plume at low --thresh, which left the velocity map empty; '
+                         'run_j_co2 passes the per-recording value.')
     ap.add_argument('--frame-offset', type=int, default=0,
                     help='global frame of page 0 (single-TIFF mode only)')
     ap.add_argument('--central-map', default=None)
@@ -323,7 +332,7 @@ def main():
                     continue
                 raw = t.pages[page].asarray()
                 b = binarize(raw, args.close_radius, bright_thresh=args.thresh,
-                             min_arc_px=args.min_arc_px)
+                             min_arc_px=args.min_arc_px, max_arc_px=args.max_arc_px)
                 if b.any():
                     vel_sum[b] += v; vel_cnt[b] += 1
                     used += 1

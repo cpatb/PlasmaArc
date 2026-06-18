@@ -1,23 +1,31 @@
 #!/usr/bin/env python3
 """
-mode_velocity_compare.py  -  Arc velocity by Mode (A/B) and direction (up/down).
+mode_velocity_compare.py  -  Arc velocity / propagation timing by Mode (A/B) and
+direction (up/down). Flash frames are excluded (see mode_common.py).
 
-Figures saved
--------------
-mode_vel_local_allgroups.png  -- per-FRAME local velocity, 4 groups (histogram+KDE)
-mode_vel_advance_AB.png       -- per-CYCLE advance velocity, A vs B
-mode_vel_advance_dir.png      -- per-CYCLE advance velocity, down vs up
-mode_vel_boxplot.png          -- per-CYCLE advance velocity, 4-group box+jitter
-mode_dur_AB.png               -- per-CYCLE propagation duration (ms), A vs B
-mode_dur_dir.png              -- per-CYCLE propagation duration, down vs up
-mode_dur_allgroups.png        -- per-CYCLE propagation duration, 4 groups (mode x direction) overlaid
-mode_dur_boxplot.png          -- per-CYCLE propagation duration, 4-group box+jitter
+For every metric the full comparison panel is produced:
+    {stub}_AB.png         Mode A vs Mode B   (pooled over direction)
+    {stub}_dir.png        down vs up         (pooled over mode)
+    {stub}_allgroups.png  all four mode x direction groups overlaid
+    {stub}_boxplot.png    all four groups as a box plot
 
-Advance velocity = linear regression slope of arc-tip position from the
-re-strike frame to the first extension peak, converted to m/s.
+Metrics
+-------
+Local velocity   local  PF['local_vel_ms']      stub mode_vel_local
+                        per detected frame, OLS sliding window
+                        (allgroups -> mode_vel_local_allgroups.png,
+                         box       -> mode_vel_local_boxplot.png)
+Advance velocity event  PR['advance_vel_ms']    stub mode_vel_advance
+                        per-cycle linear-regression slope of arc-tip position
+                        from nucleation (re-strike) to the first extension peak
+                        (AB  -> mode_vel_advance_AB.png,
+                         dir -> mode_vel_advance_dir.png,
+                         box -> mode_vel_boxplot.png)
+Duration         event  PR['duration_frames']   stub mode_dur
+                        frames from nucleation to extension peak, in ms at --fps
 
-Propagation duration = number of frames from re-strike to first extension peak,
-converted to ms at the recording fps.
+Local velocity and advance velocity are the per-frame and per-cycle views of the
+same propagation. Local-velocity box plots omit the raw-point jitter (dense).
 
 Usage (PowerShell):
     python mode_velocity_compare.py ^
@@ -28,18 +36,10 @@ import argparse
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import matplotlib; matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from scipy.stats import mannwhitneyu, gaussian_kde
 
 from mode_common import analyze_recording
 import arc_filter  # single source of truth for flash / velocity-cap criteria
-
-GROUP_ORDER = [('down', 'A'), ('down', 'B'), ('up', 'A'), ('up', 'B')]
-GLABEL = {('down', 'A'): 'A dn', ('down', 'B'): 'B dn',
-          ('up',   'A'): 'A up', ('up',   'B'): 'B up'}
-GCOLOR = {('down', 'A'): '#26A69A', ('down', 'B'): '#00695C',
-          ('up',   'A'): '#AB47BC', ('up',   'B'): '#6A1B9A'}
+from mode_plots import emit_pos_set, ps
 
 
 def resolve(p):
@@ -47,70 +47,24 @@ def resolve(p):
     return p if p.suffix == '.csv' else p / 'measurements_all_events.csv'
 
 
-def mw(a, b):
-    a = np.asarray(a, float); b = np.asarray(b, float)
-    a = a[np.isfinite(a)]; b = b[np.isfinite(b)]
-    if len(a) < 5 or len(b) < 5:
-        return np.nan
-    try:
-        return mannwhitneyu(a, b, alternative='two-sided').pvalue
-    except Exception:
-        return np.nan
+def _pf_getter(PF, col):
+    def g(dr, m):
+        return pd.to_numeric(
+            PF[(PF['direction'] == dr) & (PF['cycle_mode'] == m)][col], errors='coerce')
+    return g
 
 
-def ps(p):
-    return '%.3g' % p if not np.isnan(p) else 'n/a'
+def _pr_getter(df, col, scale=1.0):
+    def g(dr, m):
+        s = pd.to_numeric(
+            df[(df['direction'] == dr) & (df['mode'] == m)][col], errors='coerce')
+        return s * scale
+    return g
 
 
-def hist_kde_groups(ax, groups, xcap, xlabel, ylabel, title, n_bins=25):
-    """Normalised histogram (density) with KDE curve overlaid per group."""
-    for label, color, v in groups:
-        v = np.asarray(v, float)
-        v = v[np.isfinite(v) & (v > 0) & (v <= xcap)]
-        if len(v) < 5:
-            continue
-        ax.hist(v, bins=n_bins, range=(0, xcap), density=True,
-                color=color, alpha=0.25, edgecolor='none')
-        x = np.linspace(0, xcap, 400)
-        ax.plot(x, gaussian_kde(v)(x), color=color, lw=1.8,
-                label=label)
-        # dashed vertical line at the group MEAN (not median)
-        ax.axvline(float(np.mean(v)), color=color, ls='--', lw=1.2, alpha=0.9)
-    ax.plot([], [], color='gray', ls='--', lw=1.2, label='dashed = mean')
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.legend(fontsize=8, frameon=False)
-    ax.set_xlim(0, xcap)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-
-
-def box4_generic(ax, data, labels, colors, cap, ylabel, title):
-    bp = ax.boxplot(data, positions=range(len(data)), widths=0.6,
-                    showfliers=False, patch_artist=True,
-                    showmeans=True, meanline=True,
-                    meanprops=dict(color='black'),
-                    medianprops=dict(linewidth=0))
-    for patch, c in zip(bp['boxes'], colors):
-        patch.set_facecolor(c); patch.set_alpha(0.6)
-    for i, v in enumerate(data):
-        if len(v):
-            jit = np.random.default_rng(0).normal(0, 0.05, len(v))
-            ax.scatter(np.full(len(v), i) + jit, v, s=6,
-                       c='k', alpha=0.25, zorder=3)
-    ax.set_xticks(range(len(data)))
-    ax.set_xticklabels(labels)
-    ax.set_ylabel(ylabel)
-    ax.set_ylim(0, cap)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-
-
-def savefig(fig, path):
-    fig.tight_layout()
-    fig.savefig(path, dpi=150, facecolor='white', bbox_inches='tight')
-    plt.close(fig)
-    print('Saved %s' % path)
+def _log(tag, P):
+    print('  %-22s A vs B p=%s   down vs up p=%s   A up/dn p=%s   B up/dn p=%s'
+          % (tag, ps(P['pAB']), ps(P['pdir']), ps(P['pAud']), ps(P['pBud'])))
 
 
 def main():
@@ -159,153 +113,34 @@ def main():
     PF['local_vel_ms'] = pd.to_numeric(PF['local_vel_ms'], errors='coerce')  # no velocity cap
     PR.to_csv(out_dir / 'mode_velocity_restrikes.csv', index=False)
 
-    # --- advance velocity (reported as measured; flashes already removed) ---
+    def pr_has(col):
+        return col in PR.columns and PR[col].notna().any()
+
+    # Local arc-tip velocity (per detected frame)
+    print('\nLocal velocity (m/s, per frame):')
+    P = emit_pos_set(out_dir, 'mode_vel_local',
+                     'Per-frame local arc-tip velocity (m/s)', 'Local arc-tip velocity',
+                     _pf_getter(PF, 'local_vel_ms'), jitter=False)
+    _log('per-frame (local):', P)
+
+    # Advance velocity (per re-strike cycle; regression nucleation -> peak)
+    print('\nAdvance velocity (m/s, per cycle):')
     av = PR.dropna(subset=['advance_vel_ms'])
-    A  = av[av['mode'] == 'A']['advance_vel_ms']
-    B  = av[av['mode'] == 'B']['advance_vel_ms']
-    UP = av[av['direction'] == 'up'  ]['advance_vel_ms']
-    DN = av[av['direction'] == 'down']['advance_vel_ms']
-    def g_av(dr, m):
-        return av[(av['direction'] == dr) & (av['mode'] == m)]['advance_vel_ms']
-    p_ab_v  = mw(A, B)
-    p_ud_v  = mw(UP, DN)
-    p_Aud_v = mw(g_av('up', 'A'), g_av('down', 'A'))
-    p_Bud_v = mw(g_av('up', 'B'), g_av('down', 'B'))
-    print('\nAdvance velocity (m/s):')
-    print('  A vs B p=%s   up vs dn p=%s   A-up vs A-dn p=%s   B-up vs B-dn p=%s'
-          % (ps(p_ab_v), ps(p_ud_v), ps(p_Aud_v), ps(p_Bud_v)))
+    P = emit_pos_set(out_dir, 'mode_vel_advance',
+                     'Advance velocity (m/s)', 'Advance velocity (regression)',
+                     _pr_getter(av, 'advance_vel_ms'),
+                     box_name='mode_vel_boxplot.png', jitter=True)
+    _log('per-cycle advance:', P)
 
-    # --- propagation duration ---
-    has_dur = ('duration_frames' in PR.columns and PR['duration_frames'].notna().any())
-    if has_dur:
-        dv  = PR.dropna(subset=['duration_frames'])
-        fps = args.fps
-        dA  = dv[dv['mode'] == 'A']['duration_frames'] / fps * 1000.0
-        dB  = dv[dv['mode'] == 'B']['duration_frames'] / fps * 1000.0
-        dUP = dv[dv['direction'] == 'up'  ]['duration_frames'] / fps * 1000.0
-        dDN = dv[dv['direction'] == 'down']['duration_frames'] / fps * 1000.0
-        def g_dur_ms(dr, m):
-            return dv[(dv['direction'] == dr) & (dv['mode'] == m)]['duration_frames'] / fps * 1000.0
-        p_ab_d  = mw(dA, dB)
-        p_ud_d  = mw(dUP, dDN)
-        p_Aud_d = mw(g_dur_ms('up', 'A'), g_dur_ms('down', 'A'))
-        p_Bud_d = mw(g_dur_ms('up', 'B'), g_dur_ms('down', 'B'))
-        print('\nPropagation duration (ms):')
-        print('  A vs B p=%s   up vs dn p=%s   A-up vs A-dn p=%s   B-up vs B-dn p=%s'
-              % (ps(p_ab_d), ps(p_ud_d), ps(p_Aud_d), ps(p_Bud_d)))
-        all_dur = pd.concat([dA, dB])
-        dur_cap = float(np.nanpercentile(all_dur[all_dur > 0], 99)) if (all_dur > 0).any() else 1.0
-
-    lv_cap = (float(np.nanpercentile(PF['local_vel_ms'].dropna(), 99))
-              if PF['local_vel_ms'].notna().any() else 1.0)
-    av_cap = float(np.nanpercentile(av['advance_vel_ms'], 99)) if len(av) else 1.0
-
-    flash_note = 'flashes removed (eff_width>%.0f OR arc_width_px>%.0f)' % (
-        args.flash_eff_width, args.flash_arc_width)
-
-    # Figure 1: per-frame local velocity, all 4 groups
-    fig, ax = plt.subplots(figsize=(7, 4))
-    groups = [(GLABEL[k], GCOLOR[k],
-               PF[(PF['direction'] == k[0]) & (PF['cycle_mode'] == k[1])]['local_vel_ms'])
-              for k in GROUP_ORDER]
-    hist_kde_groups(ax, groups, lv_cap,
-                    xlabel='Per-frame local arc-tip velocity (m/s)',
-                    ylabel='Probability density',
-                    title='Local velocity distribution by mode x direction\n'
-                          '(per detected frame, OLS sliding window; %s)' % flash_note)
-    savefig(fig, out_dir / 'mode_vel_local_allgroups.png')
-
-    # Figure 2: advance velocity, A vs B
-    fig, ax = plt.subplots(figsize=(6, 4))
-    hist_kde_groups(ax,
-                    [('Mode A', '#1565C0', A), ('Mode B', '#C62828', B)],
-                    av_cap,
-                    xlabel='Advance velocity (m/s)',
-                    ylabel='Probability density',
-                    title='Arc advance velocity per re-strike cycle: A vs B\n'
-                          '(linear regression: nucleation to extension peak)\n'
-                          'Mann-Whitney p = %s' % ps(p_ab_v))
-    savefig(fig, out_dir / 'mode_vel_advance_AB.png')
-
-    # Figure 3: advance velocity, up vs down
-    fig, ax = plt.subplots(figsize=(6, 4))
-    hist_kde_groups(ax,
-                    [('down', '#00897B', DN), ('up', '#8E24AA', UP)],
-                    av_cap,
-                    xlabel='Advance velocity (m/s)',
-                    ylabel='Probability density',
-                    title='Arc advance velocity per re-strike cycle: down vs up\n'
-                          '(linear regression: nucleation to extension peak)\n'
-                          'Mann-Whitney p = %s' % ps(p_ud_v))
-    savefig(fig, out_dir / 'mode_vel_advance_dir.png')
-
-    # Figure 4: advance velocity, 4-group boxplot
-    fig, ax = plt.subplots(figsize=(6, 4))
-    data4, labels4, colors4 = [], [], []
-    for key in GROUP_ORDER:
-        v = np.asarray(g_av(*key), float)
-        v = v[np.isfinite(v) & (v > 0) & (v <= av_cap)]
-        data4.append(v); colors4.append(GCOLOR[key])
-        mean = np.mean(v) if len(v) else float('nan')
-        labels4.append('%s\nn=%d\nmean=%.2f' % (GLABEL[key], len(v), mean))
-    box4_generic(ax, data4, labels4, colors4, av_cap,
-                 ylabel='Advance velocity (m/s)',
-                 title='Arc advance velocity by mode x direction\n'
-                       'A-up vs A-dn p=%s   B-up vs B-dn p=%s'
-                       % (ps(p_Aud_v), ps(p_Bud_v)))
-    savefig(fig, out_dir / 'mode_vel_boxplot.png')
-
-    if has_dur:
-        # Figure 5: duration, A vs B
-        fig, ax = plt.subplots(figsize=(6, 4))
-        hist_kde_groups(ax,
-                        [('Mode A', '#1565C0', dA), ('Mode B', '#C62828', dB)],
-                        dur_cap,
-                        xlabel='Propagation duration (ms)',
-                        ylabel='Probability density',
-                        title='Arc propagation duration per re-strike cycle: A vs B\n'
-                              '(frames from nucleation to extension peak at %.0f fps)\n'
-                              'Mann-Whitney p = %s' % (args.fps, ps(p_ab_d)))
-        savefig(fig, out_dir / 'mode_dur_AB.png')
-
-        # Figure 6: duration, up vs down
-        fig, ax = plt.subplots(figsize=(6, 4))
-        hist_kde_groups(ax,
-                        [('down', '#00897B', dDN), ('up', '#8E24AA', dUP)],
-                        dur_cap,
-                        xlabel='Propagation duration (ms)',
-                        ylabel='Probability density',
-                        title='Arc propagation duration per re-strike cycle: down vs up\n'
-                              'Mann-Whitney p = %s' % ps(p_ud_d))
-        savefig(fig, out_dir / 'mode_dur_dir.png')
-
-        # Figure 6b: duration, all 4 mode x direction groups overlaid
-        fig, ax = plt.subplots(figsize=(7, 4))
-        dgroups = [(GLABEL[k], GCOLOR[k], g_dur_ms(*k)) for k in GROUP_ORDER]
-        hist_kde_groups(ax, dgroups, dur_cap,
-                        xlabel='Propagation duration (ms)',
-                        ylabel='Probability density',
-                        title='Arc propagation duration by mode x direction\n'
-                              '(per re-strike cycle, %.0f fps)\n'
-                              'A-up vs A-dn p=%s   B-up vs B-dn p=%s'
-                              % (args.fps, ps(p_Aud_d), ps(p_Bud_d)))
-        savefig(fig, out_dir / 'mode_dur_allgroups.png')
-
-        # Figure 7: duration, 4-group boxplot
-        fig, ax = plt.subplots(figsize=(6, 4))
-        data7, labels7, colors7 = [], [], []
-        for key in GROUP_ORDER:
-            v = np.asarray(g_dur_ms(*key), float)
-            v = v[np.isfinite(v) & (v > 0) & (v <= dur_cap)]
-            data7.append(v); colors7.append(GCOLOR[key])
-            mean = np.mean(v) if len(v) else float('nan')
-            labels7.append('%s\nn=%d\nmean=%.2f ms' % (GLABEL[key], len(v), mean))
-        box4_generic(ax, data7, labels7, colors7, dur_cap,
-                     ylabel='Propagation duration (ms)',
-                     title='Arc propagation duration by mode x direction\n'
-                           'A-up vs A-dn p=%s   B-up vs B-dn p=%s'
-                           % (ps(p_Aud_d), ps(p_Bud_d)))
-        savefig(fig, out_dir / 'mode_dur_boxplot.png')
+    # Propagation duration (per cycle; frames -> ms)
+    if pr_has('duration_frames'):
+        print('\nPropagation duration (ms, per cycle):')
+        dv = PR.dropna(subset=['duration_frames'])
+        P = emit_pos_set(out_dir, 'mode_dur',
+                         'Propagation duration (ms)', 'Propagation duration',
+                         _pr_getter(dv, 'duration_frames', scale=1000.0 / args.fps),
+                         jitter=True)
+        _log('per-cycle duration:', P)
     else:
         print('[WARN] duration_frames not available -- skipping duration figures.')
 

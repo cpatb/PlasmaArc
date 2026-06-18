@@ -71,15 +71,18 @@ def binarize(raw_uint8, close_r,
     candidates; morphological closing fills gaps; the largest connected
     component is kept if its area is within the credible range.
 
-    The threshold is fixed rather than adaptive (Otsu) for two reasons.
-    First, intensity analysis of labeled arc/no-arc frames shows that the
-    count of pixels above 80 DN cleanly separates real arcs from background
-    at any precision–recall operating point: requiring ≥ 75 such pixels
-    yields zero false positives across the full dataset while retaining 85 %
-    of arc-detected frames.  Second, per-frame adaptive thresholds amplify
-    noise on dark inter-arc frames by stretching the histogram, creating
-    spurious detections that corrupt event detection and Mode A/B
-    classification.
+    The threshold is FIXED (per recording) rather than adaptive (Otsu) for
+    two reasons.  First, a per-recording threshold is calibrated against the
+    arc-vs-background separation measured directly from the data (for the
+    BLADE N2 reactor this is ~80 DN; for the J-electrode CO2 sweep it is
+    bright_thresh=210, chosen from the arc/plume local-intensity QA in
+    qa_arc_local_intensity_j.py, where the arc core saturates near 255 while
+    the surrounding plume sits below ~150).  Second, per-frame adaptive
+    thresholds amplify noise on dark inter-arc frames by stretching the
+    histogram, creating spurious detections that corrupt event detection and
+    Mode A/B classification.  The caller is responsible for passing the
+    bright_thresh appropriate to the recording; this function does not assume
+    a single dataset-wide value.
 
     Parameters
     ----------
@@ -214,6 +217,53 @@ def _arc_complete_blade_lines(eps, blade_lines, tol_px,
     return ta, tb, att_a, att_b
 
 
+def _min_dist_to_points(pt, pts):
+    """Euclidean distance from pt=(row,col) to the NEAREST point in pts (M,2)."""
+    d = np.asarray(pts, float) - np.asarray(pt, float)
+    return float(np.sqrt((d[:, 0] ** 2 + d[:, 1] ** 2).min()))
+
+
+def _arc_complete_edge_points(eps, edge_a, edge_b, tol_px):
+    """
+    Curved-electrode attachment test for the J-hook geometry.
+
+    Instead of perpendicular distance to a straight blade LINE (which mis-models a
+    curved J-hook), this measures each arc-foot's distance to the nearest point of
+    the actual detected electrode EDGE point-set (built by tracking arc attachment
+    sites across all frames).  A foot counts as attached to an electrode if its
+    nearest-edge-point distance ≤ tol_px.  The two distinct skeleton endpoints that
+    minimise (dist→edge_A + dist→edge_B) are assigned to electrodes A and B.
+
+    Parameters
+    ----------
+    eps             : (N,2) skeleton endpoints [row, col]
+    edge_a, edge_b  : (Ma,2)/(Mb,2) electrode-edge point clouds [row, col]
+    tol_px          : max distance (px) to the nearest edge point to count attached
+
+    Returns ta, tb, attached_a, attached_b  (same contract as
+    _arc_complete_blade_lines), so the rest of measure_frame is unchanged.
+    """
+    if eps.shape[0] < 2 or edge_a is None or edge_b is None \
+       or len(edge_a) == 0 or len(edge_b) == 0:
+        return None, None, False, False
+    dists_a = np.array([_min_dist_to_points(ep, edge_a) for ep in eps])
+    dists_b = np.array([_min_dist_to_points(ep, edge_b) for ep in eps])
+    best_score = np.inf
+    ta = tb = None
+    att_a = att_b = False
+    for ia in range(len(eps)):
+        for ib in range(len(eps)):
+            if ia == ib:
+                continue
+            score = dists_a[ia] + dists_b[ib]
+            if score < best_score:
+                best_score = score
+                ta, tb = eps[ia], eps[ib]
+                att_a  = bool(dists_a[ia] <= tol_px)
+                att_b  = bool(dists_b[ib] <= tol_px)
+    return ta, tb, att_a, att_b
+
+
 def arc_front_tip(binary, direction='down'):
     """
     Arc propagation front pixel.
@@ -320,6 +370,33 @@ def midline_from_blades(blade_lines):
     offA = u[1] * dpA[0] - u[0] * dpA[1]
     sideA_sign = 1.0 if offA >= 0 else -1.0
     return M_top, u, sideA_sign
+
+
+def midline_from_edge_tips(a_tip, b_tip, arc_direction='down'):
+    """Midline for the curved J-hook geometry, anchored on the two FIXED facing
+    hook tips (a_tip, b_tip = electrode A/B tip-ends near the gap).
+
+    The midline starts at the midpoint of the two hook tips and runs in the arc
+    glide direction (down for arc_direction='down', i.e. increasing row), so the
+    A/B asymmetry split is anchored on the fixed electrode gap rather than on the
+    wobbling per-frame arc.  Returns (M0, u, sideA_sign), positive offset on the
+    electrode-A side, or None if the tips coincide / are missing."""
+    if a_tip is None or b_tip is None:
+        return None
+    a_tip = np.asarray(a_tip, float); b_tip = np.asarray(b_tip, float)
+    g = b_tip - a_tip
+    n = np.hypot(g[0], g[1])
+    if n < 1e-6:
+        return None
+    M0 = 0.5 * (a_tip + b_tip)
+    # glide direction: perpendicular to the gap, pointing to larger rows (down)
+    u = np.array([-g[1], g[0]]) / n
+    if (arc_direction == 'down' and u[0] < 0) or (arc_direction == 'up' and u[0] > 0):
+        u = -u
+    dpa = a_tip - M0
+    offA = u[1] * dpa[0] - u[0] * dpa[1]
+    sideA_sign = 1.0 if offA >= 0 else -1.0
+    return M0, u, sideA_sign
 
 
 def midline_from_tips(ta, tb):
@@ -469,7 +546,15 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
                    gap_row=None,
                    finite_segments=False,
                    seg_margin_px=0.0,
+                   electrode_edges=None,
+                   flash_eff_width=arc_filter.FLASH_EFF_WIDTH,
+                   flash_arc_width=arc_filter.FLASH_ARC_WIDTH,
                    allow_tip_midline_fallback=False):
+    # electrode_edges (J-hook geometry): (edge_a, edge_b, a_tip, b_tip) where
+    # edge_a/edge_b are (M,2) point clouds of the detected electrode edges and
+    # a_tip/b_tip are the facing hook tips.  When supplied it OVERRIDES the
+    # straight blade_lines attachment test with the curved edge-point test and
+    # anchors the asymmetry midline on the fixed hook tips.
     H, W = raw.shape
     gray = raw.astype(np.float32)
     lo, hi = gray.min(), gray.max()
@@ -498,7 +583,15 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
     if not binary.any(): return m
 
     m['arc_detected'] = True; m['area_px'] = int(binary.sum())
-    ri, ci = np.where(binary); w = gray_n[binary]; ws = w.sum()
+    # Radiometry uses RAW detector counts (DN, 0-255), NOT the per-frame
+    # min-max-normalised gray_n.  gray_n is rescaled independently every frame
+    # (its max maps to 1.0), so intensities taken from it are not comparable
+    # between frames or recordings — peak_intensity would be ~1.0 on every
+    # detected frame and integrated/mean intensity would track contrast, not
+    # radiated power.  gray_n is kept only for the FWHM width profile (a purely
+    # relative shape measurement).
+    ri, ci = np.where(binary)
+    wr = raw[binary].astype(np.float64); wsr = wr.sum()
     # ── electrode-gap cutoff (flash rejection) ────────────────────────────────
     # A real arc must not extend past the user-defined electrode-gap row into the
     # electrode/flash zone.  'down': electrodes at SMALL rows, so any arc pixel
@@ -516,12 +609,12 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
     # Store sparse arc-pixel coordinates so the 2-D velocity map can be
     # accumulated in this single pass — no second read of the TIFF.
     m['_arc_rc'] = (ri.astype(np.int16), ci.astype(np.int16))
-    m['mean_intensity'] = float(w.mean())
-    m['peak_intensity'] = float(w.max())
-    m['integrated_intensity'] = float(w.sum())
-    if ws > 0:
-        m['centroid_row'] = float((ri*w).sum()/ws)
-        m['centroid_col'] = float((ci*w).sum()/ws)
+    m['mean_intensity'] = float(wr.mean())          # mean arc DN (0-255)
+    m['peak_intensity'] = float(wr.max())           # brightest arc DN (0-255)
+    m['integrated_intensity'] = float(wr.sum())     # sum of arc DN (DN*px)
+    if wsr > 0:
+        m['centroid_row'] = float((ri*wr).sum()/wsr)
+        m['centroid_col'] = float((ci*wr).sum()/wsr)
     m['bbox'] = (int(ri.min()), int(ci.min()), int(ri.max()), int(ci.max()))
     _tip_r, _tip_c = arc_front_tip(binary, arc_direction)
     # Store arc_tip_row in consistent "distance from electrode" coordinates so
@@ -555,7 +648,9 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
     # Canonical flash flag (arc_filter criterion 3), written to the CSV so every
     # downstream stage reads one consistent value rather than recomputing it.
     m['is_flash'] = arc_filter.is_flash(m['area_px'], m['arc_length_px'],
-                                        m['arc_width_px'])
+                                        m['arc_width_px'],
+                                        eff_width=flash_eff_width,
+                                        arc_width=flash_arc_width)
     eps = skeleton_endpoints(skel)
 
     # ── fully-connected check ─────────────────────────────────────────────────
@@ -565,7 +660,14 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
     # heuristic restricted to the electrode end of the frame.
     # For direction='up' the electrodes are at the BOTTOM of the frame, so the
     # heuristic must search there instead of the top.
-    if blade_lines is not None:
+    if electrode_edges is not None:
+        # J-hook geometry: attachment judged against the actual detected curved
+        # electrode-edge point clouds (not a straight line).
+        edge_a, edge_b = electrode_edges[0], electrode_edges[1]
+        ta, tb, att_a, att_b = _arc_complete_edge_points(
+            eps, edge_a, edge_b, elec_tol_px)
+        arc_complete = att_a and att_b
+    elif blade_lines is not None:
         ta, tb, att_a, att_b = _arc_complete_blade_lines(
             eps, blade_lines, elec_tol_px,
             finite_segments=finite_segments, seg_margin_px=seg_margin_px)
@@ -609,7 +711,12 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
     # bisector): the asymmetry/per-half-tortuosity metrics are left NaN instead.
     # Pass allow_tip_midline_fallback=True only for exploratory use without a
     # blade-line calibration, never for results.
-    midline = midline_from_blades(blade_lines)
+    if electrode_edges is not None and len(electrode_edges) >= 4:
+        # J-hook: anchor the midline on the two FIXED facing hook tips.
+        midline = midline_from_edge_tips(electrode_edges[2], electrode_edges[3],
+                                         arc_direction=arc_direction)
+    else:
+        midline = midline_from_blades(blade_lines)
     if midline is None and allow_tip_midline_fallback:
         midline = midline_from_tips(ta, tb)
     asym = arc_asymmetry(coords, ta, tb, midline, px_per_mm)
@@ -717,6 +824,13 @@ def main():
                          "speckle/noise floor, NOT a 'spans the electrode gap' test "
                          "(a 4-5 mm apex gap is ~40-44 px). Pass an explicit value to "
                          "tie it to this recording's geometry." % DEFAULT_MIN_ARC_PX)
+    ap.add_argument('--max-arc-px',      type=int,   default=DEFAULT_MAX_ARC_PX,
+                    help="Maximum credible arc AREA (px). A mask larger than this is "
+                         "rejected as a noise flood / flash bloom. Default %d is tuned "
+                         "for the thin BLADE N2 arc; the wide high-flow CO2 J arc needs "
+                         "a larger value (a 27 px-wide arc spanning the frame can exceed "
+                         "3000 px and be wrongly rejected) — run_j_co2.py raises it." %
+                         DEFAULT_MAX_ARC_PX)
     ap.add_argument('--top-fraction',    type=float, default=DEFAULT_TOP_FRACTION,
                     help="Fraction of frame height used for electrode-tip search (default 0.25)")
     ap.add_argument('--arc-direction',   type=str,   default='down',
@@ -727,9 +841,16 @@ def main():
                     help="Path to blade_lines.npy (shape 2×2×2) defining the two electrode "
                          "blade lines.  When supplied, arc_complete uses perpendicular "
                          "distance to each blade line rather than the widest-pair heuristic.")
+    ap.add_argument('--electrode-edges', type=str,   default=None,
+                    help="Path to an .npz with arrays A,B (curved electrode-edge point "
+                         "clouds, each (M,2) [row,col]) and A_tip,B_tip (facing hook tips), "
+                         "built by tracking arc attachment sites across frames. When given, "
+                         "arc_complete is judged by distance to the nearest EDGE POINT "
+                         "(faithful for curved J-hook electrodes) and the asymmetry midline "
+                         "is anchored on the hook tips. Overrides --blade-lines.")
     ap.add_argument('--elec-tol-px',     type=int,   default=ELEC_TOL_PX,
-                    help="Max perpendicular distance (px) from skeleton endpoint to blade "
-                         "line to be considered attached (default %d)" % ELEC_TOL_PX)
+                    help="Max distance (px) from skeleton endpoint to the electrode (blade "
+                         "line OR edge point-set) to count as attached (default %d)" % ELEC_TOL_PX)
     ap.add_argument('--finite-segments', action='store_true',
                     help="J-electrode geometry: treat each blade in blade_lines.npy as a "
                          "FINITE segment (pt0 = tip-end near the apex, pt1 = far-end) "
@@ -740,6 +861,15 @@ def main():
     ap.add_argument('--segment-margin-px', type=float, default=6.0,
                     help="Tolerance (px) past either clicked electrode end for the "
                          "--finite-segments attachment gate (default 6).")
+    ap.add_argument('--flash-arc-width', type=float, default=arc_filter.FLASH_ARC_WIDTH,
+                    help="FWHM arc width (px) above which a frame is flagged is_flash at "
+                         "the SOURCE. Default %.0f is the thin BLADE N2 arc; the wide "
+                         "high-flow CO2 J arc is ~27 px, so raise it (e.g. 45) or the real "
+                         "arc is wrongly flagged as flash and starved from event fitting." %
+                         arc_filter.FLASH_ARC_WIDTH)
+    ap.add_argument('--flash-eff-width', type=float, default=arc_filter.FLASH_EFF_WIDTH,
+                    help="Effective width area/length (px) above which a frame is is_flash "
+                         "(saturated blob). Default %.0f." % arc_filter.FLASH_EFF_WIDTH)
     ap.add_argument('--qa-interval',     type=int,   default=DEFAULT_QA_INTERVAL,
                     help="Save a QA frame every N frames (default 500)")
     ap.add_argument('--gap-row',         type=int,   default=None,
@@ -763,6 +893,7 @@ def main():
     dark_guard    = args.dark_guard
     bright_thresh = args.bright_thresh
     min_arc_px    = args.min_arc_px
+    max_arc_px    = args.max_arc_px
     elec_tol_px   = args.elec_tol_px
     arc_direction = args.arc_direction
 
@@ -783,6 +914,23 @@ def main():
         else:
             print("WARNING: --blade-lines path not found: %s" % bl_path)
             print("         Falling back to widest-pair electrode heuristic.")
+
+    # ── load curved electrode edges (J-hook geometry; overrides blade_lines) ──
+    electrode_edges = None
+    if args.electrode_edges:
+        if os.path.exists(args.electrode_edges):
+            _z = np.load(args.electrode_edges)
+            electrode_edges = (np.asarray(_z['A'], float), np.asarray(_z['B'], float),
+                               np.asarray(_z['A_tip'], float), np.asarray(_z['B_tip'], float))
+            print("Electrode edges : %s" % args.electrode_edges)
+            print("  A edge pts: %d   B edge pts: %d" % (len(electrode_edges[0]), len(electrode_edges[1])))
+            print("  hook tips A=(%.0f,%.0f) B=(%.0f,%.0f)  gap=%.1f px" % (
+                  electrode_edges[2][0], electrode_edges[2][1],
+                  electrode_edges[3][0], electrode_edges[3][1],
+                  float(np.hypot(*(electrode_edges[2]-electrode_edges[3])))))
+            print("  Attachment: nearest-edge-point ≤ %d px (curved J-hook test)" % elec_tol_px)
+        else:
+            print("WARNING: --electrode-edges path not found: %s" % args.electrode_edges)
 
     print("=" * 60)
     print("Input  : %s" % tiff_path)
@@ -805,7 +953,7 @@ def main():
                 close_r, top_frac)
 
         print("Threshold : fixed DN>%d  |  dark-guard DN<%d  |  arc area %d–%d px" % (
-              bright_thresh, dark_guard, min_arc_px, DEFAULT_MAX_ARC_PX))
+              bright_thresh, dark_guard, min_arc_px, max_arc_px))
         print("Direction : arc front is %s" % (
               "BOTTOMMOST pixel (reactor upright)" if arc_direction == 'down'
               else "TOPMOST pixel (reactor inverted)"))
@@ -826,13 +974,16 @@ def main():
                                   dark_guard=dark_guard,
                                   bright_thresh=bright_thresh,
                                   min_arc_px=min_arc_px,
-                                  max_arc_px=DEFAULT_MAX_ARC_PX,
+                                  max_arc_px=max_arc_px,
                                   blade_lines=blade_lines,
                                   elec_tol_px=elec_tol_px,
                                   arc_direction=arc_direction,
                                   gap_row=args.gap_row,
                                   finite_segments=args.finite_segments,
-                                  seg_margin_px=args.segment_margin_px)
+                                  seg_margin_px=args.segment_margin_px,
+                                  electrode_edges=electrode_edges,
+                                  flash_eff_width=args.flash_eff_width,
+                                  flash_arc_width=args.flash_arc_width)
             meas_all[i] = m
             if m['arc_detected']:
                 tip_rows[i] = m['arc_tip_row']
@@ -895,12 +1046,19 @@ def main():
         for fi, raw_qa in sorted(qa_store.items()):
             m_qa = measure_frame(raw_qa, close_r, px_per_mm,
                                   top_frac, keep_overlays=True,
+                                  dark_guard=dark_guard,
+                                  bright_thresh=bright_thresh,
+                                  min_arc_px=min_arc_px,
+                                  max_arc_px=max_arc_px,
                                   blade_lines=blade_lines,
                                   elec_tol_px=elec_tol_px,
                                   arc_direction=arc_direction,
                                   gap_row=args.gap_row,
                                   finite_segments=args.finite_segments,
-                                  seg_margin_px=args.segment_margin_px)
+                                  seg_margin_px=args.segment_margin_px,
+                                  electrode_edges=electrode_edges,
+                                  flash_eff_width=args.flash_eff_width,
+                                  flash_arc_width=args.flash_arc_width)
             fig  = render_qa_frame(raw_qa, m_qa, fi, fps, px_per_mm, tip_vels[fi])
             fig.savefig(os.path.join(qa_dir,"qa_%06d.png"%fi),
                         dpi=120, bbox_inches='tight', facecolor='black')

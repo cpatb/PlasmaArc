@@ -80,6 +80,14 @@ MIN_EVENT_FRAMES = 5
 # Centered on each advancing-front frame; 5 -> +/-2 neighbors each side.
 LOCAL_VEL_N = 5
 
+# Flash-rejection thresholds (overridable per recording via CLI). Defaults are
+# the BLADE-tuned values in arc_filter. The width threshold in particular is
+# regime-dependent: the thin N2 blade arc is ~7 px wide, but the wide high-flow
+# CO2 J arc can be ~27 px wide, so the default 16 px would flag every frame as a
+# flash and starve event fitting. Raise --flash-arc-width for those recordings.
+FLASH_ARC_WIDTH = arc_filter.FLASH_ARC_WIDTH
+FLASH_EFF_WIDTH = arc_filter.FLASH_EFF_WIDTH
+
 # Position bins for dynamics plots (normalised arc position 0→1).
 N_POSITION_BINS = 10
 
@@ -234,7 +242,8 @@ def fit_events(df, electrode_info=None):
     Returns one row per qualifying event.
     """
     detected = df[df['event_id'] >= 0].dropna(subset=['arc_tip_row'])
-    detected = detected[~arc_filter.flash_mask(detected)]   # criterion 3: drop flashes
+    detected = detected[~arc_filter.flash_mask(
+        detected, eff_width=FLASH_EFF_WIDTH, arc_width=FLASH_ARC_WIDTH)]  # criterion 3: drop flashes
     records  = []
     n_complete_used = 0
 
@@ -271,6 +280,20 @@ def fit_events(df, electrode_info=None):
         vel_ms = slope * FPS / PX_PER_MM / 1000
         # No velocity cap: flashes are rejected at the frame level (arc_filter).
 
+        # 1-sigma statistical uncertainty on the event velocity, from the
+        # standard error of the OLS slope:
+        #   SE(slope) = sqrt( SS_res/(n-2) / Sxx ),  Sxx = sum((f - f_mean)^2)
+        # propagated through the same px/frame -> m/s conversion as vel_ms.
+        # This is the random fitting error only (it does NOT include the
+        # systematic px/mm or fps calibration uncertainty).
+        n_pts = len(f_front)
+        sxx   = float(np.sum((f_front - f_front.mean()) ** 2))
+        if n_pts > 2 and sxx > 0:
+            slope_se   = float(np.sqrt(ss_res / (n_pts - 2) / sxx))
+            vel_ms_err = slope_se * FPS / PX_PER_MM / 1000
+        else:
+            vel_ms_err = np.nan
+
         if used_complete:
             n_complete_used += 1
 
@@ -287,6 +310,7 @@ def fit_events(df, electrode_info=None):
             'used_complete':   int(used_complete),
             'sub_event_count': sub_count,
             'vel_ms':          round(vel_ms, 4),
+            'vel_ms_err':      round(vel_ms_err, 4) if np.isfinite(vel_ms_err) else np.nan,
             'r2':              round(r2, 4),
             'tip_row_start':   round(float(r_front[0]), 2),
             'tip_row_end':     round(float(r_front[-1]), 2),
@@ -405,7 +429,8 @@ def compute_local_velocities(df):
             Used for density and heatmap plots.
     """
     detected    = df[df['event_id'] >= 0].dropna(subset=['arc_tip_row'])
-    detected    = detected[~arc_filter.flash_mask(detected)]   # criterion 3: drop flashes
+    detected    = detected[~arc_filter.flash_mask(
+        detected, eff_width=FLASH_EFF_WIDTH, arc_width=FLASH_ARC_WIDTH)]   # criterion 3: drop flashes
     frame_vel   = {}
     frame_vec   = {}
     dyn_records = []
@@ -633,10 +658,18 @@ def save_per_event_data(df_merged, events, dyn, out_dir):
 
 
 def print_summary(events):
-    down = events[events['vel_ms'] > 0]['vel_ms']
     print(f"\n{'─' * 60}")
     print(f"  Event velocity summary  (downward events only)")
     print(f"{'─' * 60}")
+    # No events were fitted (e.g. near-continuous detection with no clean
+    # advancing-front segments): 'vel_ms' is absent. Report and return rather
+    # than KeyError, so the rest of the pipeline (re-strike, Fourier, figures)
+    # still runs.
+    if events is None or len(events) == 0 or 'vel_ms' not in events.columns:
+        print("  No events fitted (no velocity to summarise).")
+        print(f"{'─' * 60}\n")
+        return
+    down = events[events['vel_ms'] > 0]['vel_ms']
     if len(down) == 0:
         print("  No downward-moving events found.")
         print(f"{'─' * 60}\n")
@@ -644,11 +677,16 @@ def print_summary(events):
 
     print(f"  N primary events   : {len(events)}")
     print(f"  N downward events  : {len(down)}")
-    print(f"  Mean vel.        : {np.mean(down):.3f} m/s")
     print(f"  Mean vel.          : {np.mean(down):.3f} m/s")
+    print(f"  Median vel.        : {np.median(down):.3f} m/s")
     print(f"  25th – 75th pct    : "
           f"{np.percentile(down,25):.3f} – {np.percentile(down,75):.3f} m/s")
     print(f"  95th pct           : {np.percentile(down,95):.3f} m/s")
+    if 'vel_ms_err' in events.columns:
+        med_err = events.loc[events['vel_ms'] > 0, 'vel_ms_err'].median()
+        if np.isfinite(med_err):
+            print(f"  Median fit 1σ err  : {med_err:.3f} m/s "
+                  f"(random OLS-slope error per event; excludes px/mm & fps systematics)")
 
     r2_good = (events['r2'] >= 0.5).sum()
     print(f"  Events R²≥0.5      : {r2_good} ({100*r2_good/max(len(events),1):.0f}%)")
@@ -1016,7 +1054,7 @@ def main():
     # Declared global up front: PX_PER_MM and FPS are read in the argparse help
     # strings below (and reassigned after parsing), so the declaration must
     # precede their first use in this function.
-    global PX_PER_MM, FPS, LOCAL_VEL_N
+    global PX_PER_MM, FPS, LOCAL_VEL_N, FLASH_ARC_WIDTH, FLASH_EFF_WIDTH
     import argparse
     ap = argparse.ArgumentParser(description='Event velocity — advancing-front regression')
     ap.add_argument('csv',         nargs='?', default=None,
@@ -1035,7 +1073,19 @@ def main():
                          'short-baseline (spurious) spikes at the cost of time '
                          'resolution. Default %d.'
                          % (LOCAL_VEL_N, LOCAL_VEL_N // 2, LOCAL_VEL_N))
+    ap.add_argument('--flash-arc-width', type=float, default=None,
+                    help='FWHM arc-width (px) above which a frame is treated as a flash '
+                         'and excluded from event fitting. Default %.0f (BLADE thin-arc). '
+                         'Raise it for the wide high-flow CO2 J arc (~27 px) or the flash '
+                         'filter will drop every frame.' % FLASH_ARC_WIDTH)
+    ap.add_argument('--flash-eff-width', type=float, default=None,
+                    help='eff-width (area/length, px) above which a frame is a flash. '
+                         'Default %.0f.' % FLASH_EFF_WIDTH)
     args = ap.parse_args()
+    if args.flash_arc_width is not None:
+        FLASH_ARC_WIDTH = args.flash_arc_width
+    if args.flash_eff_width is not None:
+        FLASH_EFF_WIDTH = args.flash_eff_width
 
     # Override module-level calibration if supplied on the command line.
     # These globals are used by fit_events(), compute_local_velocities(), and
@@ -1093,12 +1143,16 @@ def main():
     save_per_event_data(df_merged, events, dyn, out_dir)
     print_summary(events)
 
-    plot_distribution_by_mode(events, out_dir)
-    plot_scatter(events, out_dir)
-    plot_comparison(df_merged, out_dir)
-    plot_dynamics_density(dyn, out_dir)
-    plot_dynamics_heatmap(dyn, events, out_dir)
-    plot_nucleation_distribution(events, out_dir)
+    if events is not None and len(events) and 'vel_ms' in events.columns:
+        plot_distribution_by_mode(events, out_dir)
+        plot_scatter(events, out_dir)
+        plot_comparison(df_merged, out_dir)
+        plot_dynamics_density(dyn, out_dir)
+        plot_dynamics_heatmap(dyn, events, out_dir)
+        plot_nucleation_distribution(events, out_dir)
+    else:
+        print("  [skip] event/velocity figures — no events fitted "
+              "(near-continuous detection; needs geometry/flash cutoff or threshold tuning).")
 
     print("Done.\n")
 

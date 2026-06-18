@@ -178,6 +178,20 @@ def main():
         msg = ('clean gap -> threshold ~%d' % round(r['suggested'])) if r['clean'] else 'OVERLAP'
         print('%s : plume99=%d  arc10=%d  %s  (%d frames)'
               % (name, round(r['sur_hi']), round(r['arc_lo']), msg, len(used)))
+        # Persist the data-driven threshold so run_j_co2.py picks it up per
+        # recording (read_threshold_txt looks in tiff/threshold_suggested.txt).
+        # Only write when a clean arc/plume gap exists; on OVERLAP a single
+        # global threshold cannot separate them and we leave it to the fallback.
+        if r['clean'] and r['suggested'] is not None:
+            tdir = d / 'tiff'
+            if tdir.exists():
+                (tdir / 'threshold_suggested.txt').write_text(
+                    'threshold = %d\n'
+                    '# data-driven: midpoint of plume-99th-pct (%d) and arc-10th-pct (%d)\n'
+                    '# from qa_arc_local_intensity_j.py over %d arc frames\n'
+                    % (round(r['suggested']), round(r['sur_hi']),
+                       round(r['arc_lo']), len(used)))
+                print('    wrote %s' % (tdir / 'threshold_suggested.txt'))
 
 
 if __name__ == '__main__':

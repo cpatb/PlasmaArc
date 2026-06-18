@@ -81,7 +81,7 @@ $mods = @(
     'run_11may26.py','analyze_blade.py','detect_blade_lines.py','event_velocity.py',
     'qa_restrike.py','arc_filter.py','mode_common.py','visualize_blade.py',
     'build_velocity_map.py','fourier_analysis.py','mode_velocity_compare.py',
-    'mode_arclength_compare.py','plot_local_vel_by_direction.py','overlay_shape_metrics.py'
+    'mode_plots.py','mode_arclength_compare.py','plot_local_vel_by_direction.py','overlay_shape_metrics.py'
 )
 python -m py_compile @mods
 if ($LASTEXITCODE -ne 0) {
@@ -118,21 +118,4 @@ Write-Host ""
 Write-Host "[3/4] Mode x direction comparison figures..."
 python mode_velocity_compare.py       --down "$down" --up "$up" --px-per-mm 8.8 --out-dir "$modecmp"
 python mode_arclength_compare.py      --down "$down" --up "$up" --px-per-mm 8.8 --out-dir "$modecmp"
-python plot_local_vel_by_direction.py --down "$down" --up "$up" --out-dir "$modecmp" --px-per-mm 8.8 --fps 200000 --n-compare 10
-python plot_local_vel_by_direction.py --down "$down" --up "$up" --out-dir "$modecmp" --px-per-mm 8.8 --fps 200000 --metric tortuosity
-
-# --- 4) shape-metric overlays (per recording, separate subfolders) ---------
-Write-Host ""
-Write-Host "[4/4] Shape-metric overlays..."
-python overlay_shape_metrics.py --results "$down" --out-dir (Join-Path $overlay 'down') --direction down --gap-row 26  --px-per-mm 8.8
-python overlay_shape_metrics.py --results "$up"   --out-dir (Join-Path $overlay 'up')   --direction up   --gap-row 241 --px-per-mm 8.8
-
-Write-Host ""
-Write-Host "================================================================"
-Write-Host (" ALL DONE   {0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
-Write-Host " Results : $down"
-Write-Host "           $up"
-Write-Host " Figures : $modecmp , $overlay"
-Write-Host " Log     : $log"
-Write-Host "================================================================"
-Stop-Transcript | Out-Null
+python plot_local_vel_by_direction.py --down "$

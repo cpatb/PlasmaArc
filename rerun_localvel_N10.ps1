@@ -74,7 +74,7 @@ Write-Host "[0.5] Syntax-checking modules..."
 $mods = @(
     'run_11may26.py','event_velocity.py','qa_restrike.py','arc_filter.py',
     'mode_common.py','build_velocity_map.py','fourier_analysis.py',
-    'visualize_blade.py','mode_velocity_compare.py','mode_arclength_compare.py',
+    'visualize_blade.py','mode_velocity_compare.py','mode_plots.py','mode_arclength_compare.py',
     'plot_local_vel_by_direction.py'
 )
 python -m py_compile @mods
