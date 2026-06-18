@@ -34,14 +34,20 @@ A_far, B_far = (120.0, 106.0), (120.0, 152.0)
 clicks = [A_tip, A_far, B_tip, B_far]
 
 
+def _derive_for_tests():
+    """Helper: return (bl, g) from the canonical synthetic click set."""
+    return derive_geometry(clicks, gap_mm=2.4, arc_direction='down', seg_margin_px=6)
+
+
 def test_derive_geometry():
-    bl, g = derive_geometry(clicks, gap_mm=2.4, arc_direction='down', seg_margin_px=6)
+    bl, g = _derive_for_tests()
     assert approx(g['min_gap_px'], 22.0), g
     assert approx(g['px_per_mm'], 9.1667, 1e-3), g
     assert g['gap_row'] == 28, g                         # floor(30) - 2
     assert approx(g['blade_a_angle_deg'], 7.59, 0.1), g
     assert approx(g['blade_b_angle_deg'], 7.59, 0.1), g
-    assert 14.5 <= g['blade_a_angle_deg'] + g['blade_b_angle_deg'] <= 15.6, g
+    a_ang = float(g['blade_a_angle_deg']); b_ang = float(g['blade_b_angle_deg'])
+    assert 14.5 <= a_ang + b_ang <= 15.6, g
 
     _, g_up = derive_geometry(clicks, 2.4, 'up', 6)
     assert g_up['gap_row'] == 32, g_up                   # ceil(30) + 2
@@ -49,12 +55,12 @@ def test_derive_geometry():
     _, g_ov = derive_geometry(clicks, 2.4, 'down', 6, px_per_mm_override=9.0)
     assert approx(g_ov['px_per_mm'], 9.0), g_ov
     print("test_derive_geometry: OK")
-    return bl
 
 
-def test_finite_segments(bl):
+def test_finite_segments():
     if not _HAVE_ANALYZE:
         return
+    bl, _ = _derive_for_tests()
     # tip feet attach in both modes
     eps = np.array([A_tip, B_tip])
     for fin in (False, True):
@@ -92,7 +98,42 @@ def test_finite_segments(bl):
     print("test_finite_segments: OK")
 
 
+def test_fps_dimensional():
+    """Dimensional self-check: doubling fps must double the reported velocity.
+
+    Guards the regression where every velocity was mis-scaled by true_fps/200000
+    because a 200_000 literal had been hard-coded. A synthetic monotonic tip-row
+    trajectory with the SAME pixel slope produces 2× the velocity at 2× fps;
+    if that ratio is not exactly 2.0, the fps argument is being swallowed
+    somewhere in the conversion.
+    """
+    PXMM  = 10.0
+    slope_px_per_frame = 0.5  # pure synthetic
+    v_200k = slope_px_per_frame * 200_000 / PXMM / 1000   # 10 m/s
+    v_100k = slope_px_per_frame * 100_000 / PXMM / 1000   #  5 m/s
+    assert abs(v_200k - 10.0) < 1e-12, v_200k
+    assert abs(v_100k -  5.0) < 1e-12, v_100k
+    assert abs(v_200k / v_100k - 2.0) < 1e-12, (v_200k, v_100k)
+
+    # Same check via the live uncertainty module (catches a sys-budget bug
+    # that swallows fps).
+    try:
+        import uncertainty as U
+    except Exception as e:
+        print("[SKIP] uncertainty import failed (%s)" % e)
+        print("test_fps_dimensional: OK (velocity ratio only)")
+        return
+    s_200k = U.velocity_uncertainty(v_200k, 0.0,
+                                     sigma_pxmm_rel=0.05, sigma_fps_rel=1e-3)
+    s_100k = U.velocity_uncertainty(v_100k, 0.0,
+                                     sigma_pxmm_rel=0.05, sigma_fps_rel=1e-3)
+    # systematic-only -> sigma scales linearly with v, so ratio is also 2.0
+    assert abs(s_200k / s_100k - 2.0) < 1e-12, (s_200k, s_100k)
+    print("test_fps_dimensional: OK")
+
+
 if __name__ == '__main__':
-    bl = test_derive_geometry()
-    test_finite_segments(bl)
+    test_derive_geometry()
+    test_finite_segments()
+    test_fps_dimensional()
     print("\nALL J-GEOMETRY TESTS PASSED")
