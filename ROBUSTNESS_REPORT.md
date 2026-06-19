@@ -418,3 +418,89 @@ forward is 2–3 more independent recordings at this condition with the
 chamber fully repurged between each, to bracket how much of the apparent
 spread is endogenous run-to-run vs setup-state drift.
 
+---
+
+## Addendum — 2026-06-18 (evening): 1.2 mm full-recording reprocessing
+
+The 1.2 mm / 1500 mL recording is the only long-duration `.cine` in the
+sweep (873 563 frames = 4.37 s at 200 kHz, vs ~ 95 ms for the others).
+The previous robustness-pass results for this condition were computed on
+only the first ~10 chunks (≈ 100 k frames) — a 10 % prefix of the file.
+A 3-chunk go/no-go probe (`long_video_probe.py`) flagged a 21.8 σ
+asymmetry drift and a 1.6 σ velocity drift over the full recording, so
+the file was reprocessed end-to-end (`run_j_co2.py --from-stage convert`,
+~ 3 hours wall clock).
+
+### What changed
+
+| Metric                  | Partial (prefix) | Full (4.37 s) | Notes |
+| ----------------------- | ---------------: | ------------: | ----- |
+| n events fitted         |               74 |       **669** | 9× more |
+| n re-strikes            |              151 |     **1 346** | 9× more |
+| median event v_ms       |             3.68 |      **4.21** | sits closer to the d ∈ {0.8, 0.4} part of the Re trend |
+| σ_v_total (recording)   |             0.25 |      **0.22** | tighter from more events |
+| Mode B re-strike frac   |             0.47 |       0.472   | aggregate barely changes — the partial happened to be representative |
+| \|asym\| median        |             0.213 |     **0.187** | the 0.213 in the earlier sweep was the *initial transient*, not the time-average |
+| Calibration (px/mm)     |             11.2  |        11.2   | unchanged; matches previous CLI override (see note below) |
+
+### NEW: first clean temporal drift signature in the sweep
+
+`temporal_velocity_profiles.py` first-vs-last-events test now finds a
+*stable* positive Δ on the 1.2 mm recording across all three group sizes:
+
+| n_events | Δ median v_ms | KS p              |
+| -------: | -------------: | ----------------: |
+|        3 |        **+1.68** | 5.6 × 10⁻¹⁴       |
+|        5 |        **+1.21** | 8.6 × 10⁻¹⁷       |
+|       10 |        **+1.50** | 1.3 × 10⁻⁴¹       |
+
+All positive, all 5–7 σ above the systematic floor (0.21 m/s), and stable
+to within ± 0.25 m/s as group size triples. This is the **only** recording
+in the sweep where the sign of Δ does not flip across group sizes (see
+the cross-recording bar plot in
+`Reynolds_comparison/temporal_summary_xrecording.png`). With 635 qualifying
+events spanning 4.37 seconds, the test has the statistical power that the
+short ~ 95 ms recordings did not.
+
+The exponential warm-up fit (`warmup_time.py`) does NOT capture this drift
+— it returns τ = 13.9 ± 16.8 s with R² ≈ 0 and the conditioning flags
+all fire. The 4.37 s recording is too short relative to the underlying
+timescale; the drift looks approximately linear within the window
+(≈ +0.34 m/s per second) and would need a recording on the order of
+30–60 s to resolve τ if the dynamics are exponential, or a different
+model entirely if they are not.
+
+### Calibration note (carried over from the partial run)
+
+`j_geometry.json` stores `px_per_mm = 8.75`, but `min_gap_px = 26.81` and
+`min_gap_mm = 2.4` imply 11.17. The full reprocessing used the same
+CLI-override (`--px-per-mm 11.2`) the partial run used, preserving
+consistency between partial and full numbers and matching the geometric
+calibration. The `8.75` field in `j_geometry.json` appears to be a leftover
+value from a different recording's calibration; it should be set to 11.17
+to match the actual click-measured gap. Not changed in this pass — would
+re-trigger reprocessing.
+
+### Files affected
+
+Cross-recording figures regenerated (1.2 mm point shifts in every panel):
+- `Reynolds_comparison/reynolds_arc_velocity.{pdf,png}` (4.21 vs 3.68 m/s)
+- `Reynolds_comparison/reynolds_mode_b_fraction.{pdf,png}` (0.472 unchanged)
+- `Reynolds_comparison/reynolds_cycle_frequency.{pdf,png}`
+- `Reynolds_comparison/mode_ratio_vs_re.{pdf,png}` (now using 1 346 re-strikes)
+- `Reynolds_comparison/asymmetry_vs_re.{pdf,png}` (\|asym\| = 0.187 vs 0.213)
+- `Reynolds_comparison/temporal_summary_xrecording.{pdf,png}` (1.2 mm now stable-+)
+- `Reynolds_comparison/warmup_summary.{pdf,png}` (1.2 mm τ unbounded)
+
+Per-recording figures regenerated in `HS_1.2mm_1500mL_(CO2)_results/`:
+- `event_summary_with_unc.csv`
+- `asymmetry_timeseries_HS_1.2mm_1500mL_(CO2)_results.{pdf,png}`
+- `warmup_fit_HS_1.2mm_1500mL_(CO2)_results.{pdf,png}`
+- `temporal_profiles_n{3,5,10}.{pdf,png}`
+- All native pipeline outputs (fig01–fig19, fourier_*, qa_restrike, etc.)
+
+The previous-pass partial outputs are preserved at
+`HS_1.2mm_1500mL_(CO2)_results/__partial_prerobust_backup__/` (the 10
+original per-chunk dirs + the original tiff folder). They are not used by
+any current aggregator.
+
