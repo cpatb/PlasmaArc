@@ -53,11 +53,16 @@ def recompute_one(results_dir, sigma_pxmm_rel=None, sigma_fps_rel=None,
     # event_velocity.py was invoked with --pxmm-rel-err / --fps-rel-err and
     # run_j_co2.py logged it), prefer that over the CLI default — keeps the
     # post-hoc recomputation consistent with whatever the pipeline used.
-    s_pxmm = (sigma_pxmm_rel if sigma_pxmm_rel is not None
-              else meta.get('sigma_pxmm_rel') or uncertainty.SIGMA_PXMM_REL)
-    s_fps  = (sigma_fps_rel  if sigma_fps_rel  is not None
-              else meta.get('sigma_fps_rel')  or uncertainty.SIGMA_FPS_REL)
-    s_pxmm = float(s_pxmm); s_fps = float(s_fps)
+    # Use `is not None` (not `or`) so an explicit 0.0 in the metadata — a
+    # deliberately-suppressed systematic — is honoured instead of silently
+    # falling back to the 5%/0.1% default.
+    def _pick(cli, key, default):
+        if cli is not None:
+            return cli
+        m = meta.get(key)
+        return m if m is not None else default
+    s_pxmm = float(_pick(sigma_pxmm_rel, 'sigma_pxmm_rel', uncertainty.SIGMA_PXMM_REL))
+    s_fps  = float(_pick(sigma_fps_rel,  'sigma_fps_rel',  uncertainty.SIGMA_FPS_REL))
 
     v   = df['vel_ms'].to_numpy(dtype=float)
     sst = (df['vel_ms_err'].to_numpy(dtype=float)
@@ -103,8 +108,6 @@ def main():
         targets = [Path(args.results)]
     else:
         root    = Path(args.root)
-        targets = sorted(d for d in root.glob('*_results')
-                         if d.is_dir() and not d.name.endswith('_repeat_results') is None)
         # Plain glob; ALL *_results dirs, including the per-chunk ones, are fine
         # to recompute — they just won't have event_summary if not run.
         targets = sorted(d for d in root.glob('*_results') if d.is_dir())
