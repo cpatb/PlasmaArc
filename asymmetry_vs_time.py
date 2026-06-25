@@ -41,6 +41,7 @@ import matplotlib.pyplot as plt
 
 import arc_filter
 import figstyle
+import plot_config
 import reynolds_comparison as rc
 import sweep_utils
 
@@ -48,7 +49,6 @@ BIAS_THRESHOLD = 0.2          # |arclen_asym| above this counts as "biased"
 RUNNING_WINDOW_FRAMES = 2001  # ~10 ms at 200 kHz; broad enough to smooth out
                               # per-event jitter but narrow enough to track
                               # any real drift across the recording.
-_PALETTE_D = {0.4: '#00204d', 0.8: '#5d7588', 1.2: '#fde725'}
 
 
 def load_valid(results_dir):
@@ -215,7 +215,7 @@ def cross_recording_plot(rows, out_dir):
 
     def _plot(ax, ycol, yerr_col, ylab, title, show_zero=False):
         for d_mm, g in df.groupby('d_mm'):
-            col = _PALETTE_D.get(float(d_mm), '#979c91')
+            col = plot_config.nozzle_color(d_mm)
             yerr = g[yerr_col] if yerr_col in g.columns else None
             ax.errorbar(g['Re'], g[ycol],
                          xerr=g['sigma_Re'], yerr=yerr,

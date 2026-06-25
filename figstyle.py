@@ -14,28 +14,32 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from cycler import cycler
 
+import plot_config
 
-CIVIDIS_DISCRETE = ['#00204d', '#1d4f7a', '#5d7588', '#979c91', '#cfc28f', '#fde725']
+# Re-exported for callers that referenced figstyle.CIVIDIS_DISCRETE directly.
+CIVIDIS_DISCRETE = plot_config.CIVIDIS_DISCRETE
 
 
 def apply():
-    """Set rcParams for the paper-grade standard (§5)."""
+    """Set rcParams for the paper-grade standard, sourced from plot_config."""
+    s = plot_config.STYLE
+    o = plot_config.OUTPUT
     plt.rcParams.update({
-        'font.size':         10,
-        'axes.labelsize':    11,
-        'axes.titlesize':    11,
-        'legend.fontsize':    9,
-        'xtick.labelsize':    9,
-        'ytick.labelsize':    9,
-        'figure.dpi':       120,
-        'savefig.dpi':      300,
-        'savefig.bbox':     'tight',
-        'axes.spines.top':   False,
-        'axes.spines.right': False,
-        'image.cmap':       'cividis',
-        'axes.prop_cycle':  cycler(color=CIVIDIS_DISCRETE),
-        'pdf.fonttype':     42,    # TrueType — fonts editable in vector output
-        'ps.fonttype':      42,
+        'font.size':         s['font_size'],
+        'axes.labelsize':    s['axes_label_size'],
+        'axes.titlesize':    s['axes_title_size'],
+        'legend.fontsize':   s['legend_size'],
+        'xtick.labelsize':   s['tick_size'],
+        'ytick.labelsize':   s['tick_size'],
+        'figure.dpi':        s['screen_dpi'],
+        'savefig.dpi':       o['png_dpi'],
+        'savefig.bbox':      'tight' if o['tight_bbox'] else 'standard',
+        'axes.spines.top':   not s['hide_top_right'],
+        'axes.spines.right': not s['hide_top_right'],
+        'image.cmap':        s['colormap'],
+        'axes.prop_cycle':   cycler(color=CIVIDIS_DISCRETE),
+        'pdf.fonttype':      42 if s['embed_fonts'] else 3,
+        'ps.fonttype':       42 if s['embed_fonts'] else 3,
     })
 
 
@@ -66,10 +70,14 @@ def save(fig, stem, caption, out_dir=None):
         directory; otherwise cwd.
     """
     pdf, png, txt = _ext_paths(stem, out_dir)
+    o = plot_config.OUTPUT
     pdf.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(pdf)
-    fig.savefig(png)
-    txt.write_text(caption.strip() + '\n', encoding='utf-8')
+    if o['save_pdf']:
+        fig.savefig(pdf)
+    if o['save_png']:
+        fig.savefig(png)
+    if o['save_caption_txt']:
+        txt.write_text(caption.strip() + '\n', encoding='utf-8')
     plt.close(fig)
     return pdf, png, txt
 
@@ -77,9 +85,13 @@ def save(fig, stem, caption, out_dir=None):
 def verify(stem, out_dir=None):
     """Assert that the three sidecar files exist and the PNG is non-empty."""
     pdf, png, txt = _ext_paths(stem, out_dir)
-    assert pdf.exists() and pdf.stat().st_size > 0, pdf
-    assert png.exists() and png.stat().st_size > 0, png
-    assert txt.exists() and txt.stat().st_size > 0, txt
+    o = plot_config.OUTPUT
+    if o['save_pdf']:
+        assert pdf.exists() and pdf.stat().st_size > 0, pdf
+    if o['save_png']:
+        assert png.exists() and png.stat().st_size > 0, png
+    if o['save_caption_txt']:
+        assert txt.exists() and txt.stat().st_size > 0, txt
     return True
 
 

@@ -63,6 +63,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 import figstyle
+import plot_config
 import sweep_utils
 
 
@@ -180,8 +181,15 @@ def load_mode_b_fraction(results_dir):
     return dict(n_restrikes=n, n_b=n_b, frac_b=p_b, SE_frac_b=SE)
 
 
-def load_cycle_frequency(results_dir, fps):
-    """Mean re-strike cycle frequency = fps / mean(cycle_frames>0)."""
+def load_cycle_metrics(results_dir, fps):
+    """Re-strike cycle statistics from ``cycle_frames`` (period, in frames).
+
+    Reports the cycle both as a duration (ms; the more intuitive read) and as a
+    frequency (Hz), so the figure can plot either via ``plot_config.CYCLE``.
+
+        cycle duration  = 1000 * cycle_frames / fps   [ms]
+        cycle frequency = fps / cycle_frames          [Hz]
+    """
     p = results_dir / 're_strikes_qa.csv'
     if not p.exists():
         return None
@@ -192,11 +200,19 @@ def load_cycle_frequency(results_dir, fps):
     cyc = cyc[cyc > 0]
     if len(cyc) < 3:
         return None
-    f_mean = float(fps / cyc.mean())
-    f_med  = float(fps / cyc.median())
-    SE     = float(fps * cyc.std(ddof=1) / (cyc.mean() ** 2) / np.sqrt(len(cyc)))
-    return dict(n_cycles=int(len(cyc)), f_mean_Hz=f_mean, f_med_Hz=f_med,
-                SE_f_Hz=SE)
+    n = int(len(cyc))
+    mean_frames = float(cyc.mean())
+    # duration: mean period in ms, SE = SE of the mean period scaled to ms
+    dur_mean = 1000.0 * mean_frames / fps
+    dur_med  = 1000.0 * float(cyc.median()) / fps
+    SE_dur   = 1000.0 * float(cyc.std(ddof=1)) / fps / np.sqrt(n)
+    # frequency: kept for back-compat and the CSV
+    f_mean = float(fps / mean_frames)
+    f_med  = float(fps / float(cyc.median()))
+    SE_f   = float(fps * cyc.std(ddof=1) / (mean_frames ** 2) / np.sqrt(n))
+    return dict(n_cycles=n,
+                dur_mean_ms=dur_mean, dur_med_ms=dur_med, SE_dur_ms=SE_dur,
+                f_mean_Hz=f_mean, f_med_Hz=f_med, SE_f_Hz=SE_f)
 
 
 def per_recording_row(results_dir, sigma_d_rel, sigma_q_rel):
@@ -213,7 +229,7 @@ def per_recording_row(results_dir, sigma_d_rel, sigma_q_rel):
                                        sigma_q_rel=sigma_q_rel)
     em = load_event_metrics(results_dir)
     mb = load_mode_b_fraction(results_dir)
-    cf = load_cycle_frequency(results_dir, fps=float(meta.get('fps', 200000)))
+    cf = load_cycle_metrics(results_dir, fps=float(meta.get('fps', 200000)))
 
     row = dict(
         recording=meta.get('recording', results_dir.name),
@@ -230,6 +246,8 @@ def per_recording_row(results_dir, sigma_d_rel, sigma_q_rel):
         frac_b=(mb['frac_b']             if mb else np.nan),
         SE_frac_b=(mb['SE_frac_b']       if mb else np.nan),
         n_cycles=(cf['n_cycles']         if cf else 0),
+        dur_mean_ms=(cf['dur_mean_ms']   if cf else np.nan),
+        SE_dur_ms=(cf['SE_dur_ms']       if cf else np.nan),
         f_mean_Hz=(cf['f_mean_Hz']       if cf else np.nan),
         SE_f_Hz=(cf['SE_f_Hz']           if cf else np.nan),
     )
@@ -263,30 +281,31 @@ def aggregate_per_condition(df):
             sigma_v_ms_sys=float(sys_v) if pd.notnull(sys_v) else 0.0,
             frac_b=float(grp['frac_b'].mean()),
             SE_frac_b=float(grp['SE_frac_b'].mean()),
+            dur_mean_ms=float(grp['dur_mean_ms'].mean()),
+            SE_dur_ms=float(grp['SE_dur_ms'].mean()),
             f_mean_Hz=float(grp['f_mean_Hz'].mean()),
             SE_f_Hz=float(grp['SE_f_Hz'].mean()),
         ))
     return pd.DataFrame(rows).sort_values(['Re'])
 
 
-_PALETTE_D = {0.4: '#00204d', 0.8: '#5d7588', 1.2: '#fde725'}
-
-
 def plot_versus_re(df_agg, y_col, y_err_col, ylabel, stem, caption, out_dir):
     figstyle.apply()
-    fig, ax = plt.subplots(figsize=(6.5, 4.2))
+    m = plot_config.MARKER
+    fig, ax = plt.subplots(figsize=plot_config.figsize(stem))
     for d_mm, g in df_agg.groupby('d_mm'):
-        col = _PALETTE_D.get(float(d_mm), '#979c91')
+        col = plot_config.nozzle_color(d_mm)
         ax.errorbar(g['Re'], g[y_col],
                     xerr=g['sigma_Re'], yerr=g[y_err_col],
-                    fmt='o', ms=8, capsize=4,
-                    color=col, mec='#000000', mew=0.6,
+                    fmt=m['fmt'], ms=m['size'], capsize=m['capsize'],
+                    color=col, mec=m['edge_color'], mew=m['edge_width'],
                     label=f'd = {d_mm:g} mm')
-    ax.set_xlabel('Reynolds number (CO₂ at 295 K, 101 kPa)')
+    ax.set_xlabel(plot_config.LABELS['reynolds_x'])
     ax.set_ylabel(ylabel)
-    ax.legend(frameon=False, fontsize=9, title='Nozzle diameter',
-              title_fontsize=9, loc='best')
-    ax.grid(alpha=0.3)
+    ax.legend(frameon=False, fontsize=plot_config.STYLE['legend_size'],
+              title=plot_config.LABELS['legend_title'],
+              title_fontsize=plot_config.STYLE['legend_size'], loc='best')
+    ax.grid(alpha=m['grid_alpha'])
     fig.tight_layout()
     figstyle.save(fig, str(out_dir / stem), caption)
     figstyle.verify(str(out_dir / stem))
@@ -336,7 +355,7 @@ def main():
     print(f"\nAggregated to {len(df_agg)} (d, Q) condition(s):")
     print(df_agg[['d_mm', 'q_mLpm', 'n_repeats', 'Re', 'Ma',
                   'median_v_ms', 'sigma_v_ms_total',
-                  'frac_b', 'f_mean_Hz']].to_string(index=False))
+                  'frac_b', 'dur_mean_ms', 'f_mean_Hz']].to_string(index=False))
 
     cap_common = (
         'CO2 at T=295.15 K, P=101.325 kPa: rho=1.815 kg/m^3 (CRC), mu=1.48e-5 Pa.s '
@@ -363,12 +382,24 @@ def main():
                    stem='reynolds_mode_b_fraction',
                    caption='Mode B re-strike fraction vs Re.\n\n' + cap_common,
                    out_dir=out_dir)
-    plot_versus_re(df_agg, 'f_mean_Hz', 'SE_f_Hz',
-                   ylabel='Mean re-strike cycle frequency (Hz)',
-                   stem='reynolds_cycle_frequency',
-                   caption='Re-strike cycle frequency (fps / mean cycle_frames) vs Re.\n\n'
-                           + cap_common,
-                   out_dir=out_dir)
+    # Re-strike cycling panel. By default this reports the cycle DURATION (ms);
+    # flip plot_config.CYCLE['metric'] to 'frequency_hz' for the old Hz plot.
+    cyc = plot_config.CYCLE
+    if cyc['metric'] == 'frequency_hz':
+        plot_versus_re(df_agg, 'f_mean_Hz', 'SE_f_Hz',
+                       ylabel=cyc['frequency_label'],
+                       stem=cyc['frequency_stem'],
+                       caption='Re-strike cycle frequency (fps / mean cycle_frames) vs Re.\n\n'
+                               + cap_common,
+                       out_dir=out_dir)
+    else:
+        plot_versus_re(df_agg, 'dur_mean_ms', 'SE_dur_ms',
+                       ylabel=cyc['duration_label'],
+                       stem=cyc['duration_stem'],
+                       caption='Re-strike cycle duration (1000 * mean cycle_frames / fps) vs Re.\n'
+                               'This is the mean time between successive arc re-strikes.\n\n'
+                               + cap_common,
+                       out_dir=out_dir)
     print(f"\nWrote figures + sidecars in {out_dir}")
 
 

@@ -30,11 +30,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 import figstyle
+import plot_config
 import reynolds_comparison as rc
 import sweep_utils
-
-
-_PALETTE_D = {0.4: '#00204d', 0.8: '#5d7588', 1.2: '#fde725'}
 
 
 def per_recording_row(results_dir, sigma_d_rel, sigma_q_rel):
@@ -157,14 +155,14 @@ def main():
     fig, ax = plt.subplots(figsize=(7.2, 4.4))
 
     for d_mm, g in df.groupby('d_mm'):
-        col = _PALETTE_D.get(float(d_mm), '#979c91')
+        col = plot_config.nozzle_color(d_mm)
         ax.errorbar(g['Re'], g['log10_R_AB'],
                     xerr=g['sigma_Re'], yerr=g['sigma_log10_R_AB'],
                     fmt='o', ms=6, capsize=3, mfc='none',
                     color=col, mec=col, alpha=0.55,
                     label=None)
     for d_mm, g in df_agg.groupby('d_mm'):
-        col = _PALETTE_D.get(float(d_mm), '#979c91')
+        col = plot_config.nozzle_color(d_mm)
         ax.errorbar(g['Re'], g['log10_R_AB'],
                     xerr=g['sigma_Re'], yerr=g['sigma_log10_R_AB'],
                     fmt='s', ms=10, capsize=4,
