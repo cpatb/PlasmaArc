@@ -1,108 +1,476 @@
-# Plasma Arc Analysis — Methods
+# Plasma Arc Analysis — Methods (CO₂ J-electrode)
 
-> **Living document.** Updated in lockstep with the codebase.  
-> Last revised: 2026-05-11  
-> Code modules: `plasma_utils/io.py`, `plasma_utils/image.py`, `plasma_utils/nephrogram.py`, `plasma_utils/qa.py`, `analyze_tiff.py`, `event_velocity.py`, `per_event_figures.py`
-
----
-
-## Table of Contents
-
-1. [Experimental Setup](#1-experimental-setup)
-2. [Data Acquisition](#2-data-acquisition)
-3. [Data Loading & Preprocessing](#3-data-loading--preprocessing)
-4. [Arc Detection (Thresholding & Morphology)](#4-arc-detection-thresholding--morphology)
-5. [Skeletonisation & Path Ordering](#5-skeletonisation--path-ordering)
-6. [Physical Calibration](#6-physical-calibration)
-7. [Arc Measurements](#7-arc-measurements)
-   - 7.1 [Arc Length](#71-arc-length)
-   - 7.2 [Arc Width (FWHM)](#72-arc-width-fwhm)
-   - 7.3 [Brightness Statistics](#73-brightness-statistics)
-   - 7.4 [Geometric Descriptors](#74-geometric-descriptors)
-   - 7.5 [Curvature](#75-curvature)
-8. [Nephrogram Construction](#8-nephrogram-construction)
-9. [Propagation Velocity Extraction (Radon — legacy)](#9-propagation-velocity-extraction-radon--legacy)
-10. [Event-Based Velocity Analysis](#10-event-based-velocity-analysis)
-    - 10.1 [Discharge Event Detection](#101-discharge-event-detection)
-    - 10.2 [Advancing-Front Regression](#102-advancing-front-regression)
-    - 10.3 [Sliding-Window Local Velocity](#103-sliding-window-local-velocity)
-    - 10.4 [Mode A / Mode B Classification](#104-mode-a--mode-b-classification)
-    - 10.5 [Per-Event Data Output](#105-per-event-data-output)
-11. [Velocity Distribution Map](#11-velocity-distribution-map)
-12. [Cycle Detection](#12-cycle-detection)
-13. [QA Frame Rendering](#13-qa-frame-rendering)
-14. [Output Files](#14-output-files)
-15. [Known Limitations & Future Work](#15-known-limitations--future-work)
-16. [References](#16-references)
+> **Living document.** Updated in lockstep with the codebase.
+> Last revised: 2026-06-21
+> **Current pipeline modules:** `run_j_co2.py`, `analyze_blade.py`, `calibrate_j_electrodes.py`,
+> `detect_j_hooks.py`, `event_velocity.py`, `arc_shape.py`, `uncertainty.py`,
+> `sensitivity_sweep.py`, `reynolds_comparison.py`, `build_velocity_map.py`.
+> **Legacy modules (Part II, reference only):** `plasma_utils/*`, `analyze_tiff.py`.
+> Companion document: `METHODS_BLADE.md` (N₂ blade-electrode experiment).
 
 ---
 
-## 1 Experimental Setup
+## 0. Pipeline status & how to read this document
 
-| Parameter | Value | Notes |
+**The J-electrode CO₂ analysis now runs through the maintained BLADE stack.**
+Since the original write-up (May 2026), the J data has been migrated onto the
+same code path used for the 11 May N₂ blade experiment: `run_j_co2.py` drives
+the BLADE conversion/detection/measurement machinery (`analyze_blade.py`,
+imported from `run_11may26.py`, not re-implemented) and shares
+`event_velocity.py` and `arc_shape.py` with every other dataset. The only
+J-specific pieces are the **electrode geometry** (hooked J-segments with a
+finite-segment attachment gate) and the **per-recording calibration**.
+
+The earlier J pipeline — per-frame Otsu detection in `plasma_utils/image.py`,
+nephrogram + Radon velocity extraction, the Radon velocity-distribution map —
+is **superseded** for quantitative work but still present in the repository.
+It is preserved in **Part II** of this document for reference and for the
+method-comparison figure; do not use it for new measurements.
+
+| Topic | Section | Status |
 |---|---|---|
-| Gas | CO₂ | Pushed through nozzle during discharge |
-| Minimum electrode gap | ~2.4 mm | Used for spatial calibration |
-| Electrode opening angle | ~15 ° | Half-angle between electrode axes |
-| Frame rate | ~200 000 fps | TIFF metadata or `--fps` argument |
-| Bit depth | 16-bit (typical) | Normalised per frame to float32 [0,1] |
-
-The CO₂ gas flow enables arc propagation by providing a conducting medium;
-the arc repeatedly breaks down, extends downward (driven by gas flow and
-electric field), and re-strokes at the electrode tips, producing the cyclic
-propagation visible in the recordings.
-
----
-
-## 2 Data Acquisition
-
-Frames are stored as multi-page TIFF stacks.  Each page is one frame.
-The loader (`plasma_utils/io.py : load_tiff`) reads metadata in the
-following priority order to determine frame rate:
-
-1. ImageJ `finterval` metadata key (seconds per frame)
-2. ImageJ `fps` or `framerate` metadata key
-3. OME-XML `TimeIncrement` and `TimeIncrementUnit`
-4. `ImageDescription` tag free-text scan for `fps=` / `framerate=`
-5. Default: 200 000 Hz (`--fps` CLI flag overrides at any point)
+| Experiment & recording sweep | Part I §1 | current |
+| Pipeline stages (`run_j_co2.py`) | Part I §2 | current |
+| J-hook geometry & calibration | Part I §3 | current |
+| Arc detection (fixed DN threshold) | Part I §4 | current |
+| Per-frame measurements | Part I §5 | current |
+| Events, velocity, Mode A/B | Part I §6 | current |
+| Arc-shape / normal velocity | Part I §7 | current |
+| Uncertainty budget | Part I §8 | current |
+| Robustness: sweep, repeats, drift | Part I §9 | current |
+| Reynolds comparison | Part I §10 | current |
+| Outputs & provenance | Part I §11 | current |
+| Otsu detection, nephrogram, Radon | Part II §§12–17 | **legacy** |
+| Known limitations & open risks | §18 | current |
+| References | §19 | — |
 
 ---
 
-## 3 Data Loading & Preprocessing
+# PART I — Current J-electrode CO₂ pipeline (BLADE-based)
 
-**File:** `plasma_utils/io.py`
+## 1. Experiment & the recording sweep
+
+The dataset is a **sweep over nozzle diameter × CO₂ flow rate, with repeats**.
+Each recording is an **independent measurement** with its own dimensions, frame
+rate (auto-detected per file — the high-speed `trig` recordings are **not**
+assumed 200 kHz) and its own electrode calibration stored in its
+`<stem>_results/` folder.
+
+| Parameter | Value | Source |
+|---|---|---|
+| Gas | CO₂ | filename |
+| Nozzle diameter | 0.4 / 0.8 / 1.2 mm (swept) | filename |
+| Flow rate | 1000 / 1500 mL·min⁻¹ (swept) | filename |
+| Minimum electrode (apex) gap | ≈ 2.4 mm | machined; sets px/mm |
+| Electrode opening angle | ≈ 15° half-angle | filename, frames |
+| Frame rate | per-recording (≈ 200 000 fps typical) | `.cine` header (auto-detected) |
+| Bit depth | 12-bit (0–4095) → 8-bit TIFF | `.cine` header |
+
+Physical picture: the arc breaks down at the apex (minimum gap), the CO₂ jet
+and electric field drive it to **extend downward** along the diverging
+electrodes, and it then **re-strikes** — producing the cyclic discharge visible
+in the bright-pixel-count trace. Two re-nucleation modes are tracked (Mode A /
+Mode B; see §6.4).
+
+### Recordings analysed (verification set)
+
+| Recording | nozzle / flow | n events | median v (m/s) | σ_total (m/s) |
+|---|---|---:|---:|---:|
+| `HS_1.2mm_1500mL_(CO2)` (full, 4.37 s) | 1.2 mm / 1500 | 669 | 4.21 | 0.22 |
+| `HS_0.8mm_1500mL_(CO2)_trig(2)` | 0.8 mm / 1500 | 24 | 7.24 | 0.46 |
+| `HS_0.4mm_1000mL_(CO2)_trig` | 0.4 mm / 1000 | 53 | 9.47 | 0.59 |
+| `HS_0.4mm_1500mL_(CO2)_trig` | 0.4 mm / 1500 | 50 | 10.01 | 0.79 |
+| `HS_0.4mm_1500mL_(CO2)_trig_repeat` | 0.4 mm / 1500 | 31 | 6.07 | 0.52 |
+
+The 0.4 mm / 1500 mL pair disagrees by ≈ 3.9 m/s — far more than either
+recording's σ_total. This is **real run-to-run variability**, not a measurement
+artefact (see §9.2); the `_repeat` is excluded from cross-recording aggregates.
+
+---
+
+## 2. Pipeline overview (`run_j_co2.py`)
 
 ```
-raw frame  (uint16, e.g. 4096×4096)
-    │
-    ▼  normalize_frame()
-float32 [0, 1]   ← per-frame min/max stretch
+run_j_co2.py (orchestrator — imports run_11may26 / analyze_blade)
+  Stage 1  convert    .cine → 8-bit TIFF chunks
+                      • percentile normalisation from sampled frames
+                      • per-chunk bad-pixel correction
+  Stage 2  analyze    analyze_blade.py per chunk → per-frame measurements.csv
+                      • fixed DN threshold (§4), finite-segment attachment (§3)
+  Stage 3  merge      concatenate chunk CSVs with global frame numbering
+  Stage 4  events     event_velocity.py → events, velocities, Mode A/B (§6)
+  Stage 5  fourier    fourier_analysis.py → cycle spectra (peaks carry σ_f, §8)
+  Stage 6  visualize  build_velocity_map.py + paper figures
 ```
 
-Per-frame normalisation adapts to:
-- AC-driven intensity fluctuations (arc brightness varies with discharge cycle)
-- Sensor non-uniformity across the sequence
-- Varying arc-to-background contrast between propagation phases
-
-> **Note:** Per-frame normalisation means absolute brightness comparisons
-> across frames require the unnormalised `integrated_intensity` metric
-> (sum of raw pixel values), not `mean_intensity`.
+**One-time calibration precedes Stage 2** (§3): convert a first chunk, run the
+interactive electrode calibration to write `j_geometry.json` (+ `blade_lines.npy`
+or `electrode_edges.npz`), then run the remaining stages. All resolved
+parameters and provenance are written to `run_metadata.json` (§11).
 
 ---
 
-## 4 Arc Detection (Thresholding & Morphology)
+## 3. Electrode geometry & spatial calibration
+
+The J electrodes are **hooked J-segments**: each blade is a *finite* curved
+segment, closest to its partner at the apex and diverging away from it. Two
+geometry representations are supported, both read by `run_j_co2.py`:
+
+| Representation | File | Producer |
+|---|---|---|
+| Straight finite blades | `blade_lines.npy` | `calibrate_j_electrodes.py` (interactive) |
+| Curved J-hook edges | `electrode_edges.npz` | `detect_j_hooks.py` |
+
+**Finite-segment attachment gate (`--finite-segments`).** Unlike the BLADE
+default (which treats electrodes as *infinite* lines), the J path requires each
+arc foot to land on the actual finite electrode segment near the apex. This
+rejects spurious "bridging" arcs whose feet would only attach to an imaginary
+extension of the blade, and it is the gate that keeps incomplete arcs out of
+the event stream (the filter audit finds an empty incomplete-arc bucket on the
+target recording as a result).
+
+**The apex gap (≈ 2.4 mm) anchors three things:** the px/mm scale, the
+electrode-gap **flash-cutoff row** (`--gap-row`, default per-recording), and the
+Mode-A/B apex reference position.
+
+### Spatial calibration (px/mm)
+
+px/mm is **per-recording** and written to `j_geometry.json`. The minimum apex
+gap in pixels divided by 2.4 mm gives the scale. Resolution order at run time:
+
+```
+--px-per-mm (CLI)  >  j_geometry.json  >  tiff/calibration.txt  >  9.167 (fallback)
+```
+
+The fallback `J_PX_PER_MM_DEFAULT = 9.167` is a last resort only; every reported
+recording uses a calibrated per-file value (e.g. 12.5 px/mm for the
+hand-segmented 0.4 mm target).
+
+> **Calibration provenance — known issue (open).** On the 1.2 mm recording,
+> `j_geometry.json` stores `px_per_mm = 8.75`, but the stored apex gap
+> (`min_gap_px = 26.81`, `min_gap_mm = 2.4`) implies **11.17**. Runs use a
+> `--px-per-mm 11.2` CLI override, so the reported numbers are correct and
+> internally consistent, but the `8.75` field is a stale leftover from a
+> different recording's calibration and should be set to 11.17. It was left
+> unchanged because editing it re-triggers a multi-hour reprocess.
+
+---
+
+## 4. Arc detection (fixed DN threshold)
+
+**File:** `analyze_blade.binarize` (same operators as the BLADE path).
+
+Detection uses a **fixed DN threshold on the raw 8-bit image**, *not* the legacy
+per-frame Otsu (Part II §12). The arc is a small bright object on a near-black
+field; per-frame adaptive thresholds amplify noise on the dark inter-stroke
+frames. Steps: dark guard → threshold at `bright_thresh` → morphological closing
+→ keep the single largest connected component within `[min_arc_px, max_arc_px]`.
+
+`max_arc_px` is raised above BLADE's 3000-px cap because the wide high-flow CO₂
+arc can legitimately exceed it (default: max of the CLI value and 10 % of frame
+area).
+
+### Threshold resolution
+
+```
+--bright-thresh (CLI)  >  j_geometry.json  >  tiff/threshold_suggested.txt  >  210 (fallback)
+```
+
+The fallback `J_BRIGHT_THRESH = 210` was chosen from the arc-vs-plume
+local-intensity QA (`qa_arc_local_intensity_j.py`): the arc core saturates near
+255 while the diffuse plume sits below ~150, so 210 keeps the whole arc and
+rejects the plume across the sweep. Per-recording values are used where
+available (e.g. 160 for the 0.4 mm/1000 target; 220 and 235 for the 0.4 mm/1500
+pair — the high-flow plume requires the higher value, see §9.2). The resolved
+threshold and its **source** are recorded in `run_metadata.json`.
+
+### Flash / saturation filtering (`arc_filter.py`)
+
+`arc_filter.py` defines the unified arc-validity criteria consumed (not
+redefined) by the pipeline: the gap-row flash cutoff, an `arc_width_px` leg, and
+an effective-width leg (`eff_width = area / length`, which fires on disconnected
+double-strikes). The filter audit (`filter_audit_montage.py`) confirms on the
+target recording that rejected frames are genuine flash/saturation/blobs and
+accepted frames are genuine arcs.
+
+---
+
+## 5. Per-frame measurements
+
+For each detected frame `analyze_blade.measure_frame` records: arc-mask **area**;
+**skeleton** (Zhang–Suen) and ordered centreline; **arc length** (skeleton px /
+px-per-mm); **FWHM width** sampled perpendicular to the local tangent (a proxy
+for channel diameter **plus** motion blur at the few-µs exposure);
+**brightness** (mean / peak / integrated); **centroid**; **bounding box**;
+**curvature**; the two skeleton **endpoints** (arc feet); and the **arc-front
+tip** (extreme pixel in the propagation direction).
+
+**Two conventions matter for correctness:**
+- **Intensity is measured on raw DN (0–255)**, never on the per-frame normalised
+  image. Cross-frame brightness comparisons must use `integrated_intensity`.
+- `arc_tip_row` is stored as **distance from the electrode**, increasing as the
+  arc extends, so downstream code sees one consistent advancing-front axis
+  regardless of reactor orientation.
+
+A bridging arc must root on **both** electrodes; this is enforced by the
+finite-segment attachment gate (§3).
+
+---
+
+## 6. Events, velocity & modes (`event_velocity.py`)
+
+Operates on the merged per-frame CSV. **Shared with the BLADE pipeline**; the J
+run supplies `--px-per-mm <calibrated>` and the auto-detected `--fps`.
+
+> **fps is per-recording and must thread through.** It is auto-detected by the
+> `.cine` probe and threaded into `event_velocity.py`, `qa_restrike.py`, and
+> `fourier_analysis.py`. A past regression that mis-scaled velocity and
+> frequency by `true_fps / 200000` is now guarded by a dimensional self-check
+> (synthetic 200 kHz vs 100 kHz → velocity ratio exactly 2.0) in
+> `test_j_geometry.py`.
+
+### 6.1 Discharge event detection
+
+A new primary event begins when the tip returns to within
+`NUCLEATION_SLACK_FRAC` (default **15 %**) of the effective arc range above the
+electrode row, or after a detection dropout > 500 frames. The electrode row is
+the 5th-percentile `arc_tip_row` of complete-arc frames; `L_eff_px = p90(tip) −
+electrode_row`. Intermediate retreats > 50 % of the current extension are
+flagged as **sub-events**.
+
+### 6.2 Advancing-front regression
+
+Only monotonic-advancing-envelope frames are fit:
+
+```
+velocity = slope [px/frame] × FPS / px_per_mm / 1000   →   m/s
+```
+
+R² reports linearity. Complete-arc frames are preferred; all detected frames are
+used if too few complete frames exist.
+
+### 6.3 Sliding-window local velocity
+
+A per-frame local velocity uses a centered OLS window of `LOCAL_VEL_N = 10`
+advancing-front neighbours (±5; `--local-vel-n`), equivalent to a
+Savitzky–Golay first derivative. **N = 10 is canonical**: N = 5 spans only
+~25 µs and admits short-baseline spikes (flagged UNSTABLE in §9.1); N = 10
+(~50 µs) suppresses them at modest cost in time resolution. The sensitivity
+sweep confirms the headline metric is stable for N ≥ 7.
+
+### 6.4 Mode A / Mode B classification
+
+From the dimensionless **normalised nucleation position**:
+
+```
+norm_nucleation_pos = (tip_row_start − electrode_row) / L_eff_px
+```
+
+Events with `norm_nucleation_pos > 0.15` are **Mode B** (back-breakdown at an
+intermediate position); the rest are **Mode A** (full extinction, re-ignition at
+the apex). The threshold is self-consistent with the event detector. The
+authoritative Mode A/B record is `re_strikes_qa.csv`.
+
+### 6.5 Per-event output
+
+`event_summary.csv` carries both characterisations per event: `vel_ms` (the
+whole-event average rate) and the time-resolved `local_vel_median / mean / p10 /
+p90 / peak / max / std`. The full per-frame profile is in
+`events/event_NNNN_dynamics.csv`. For multi-phase events the two diverge — the
+signal that a single average is insufficient.
+
+---
+
+## 7. Arc-shape tracking & normal velocity (`arc_shape.py`)
+
+The arc is a deformable filament, not a rigid body: the tip regression captures
+only the leading edge, while the arc body can flex and sweep laterally.
+`arc_shape.py` resamples the ordered skeleton to N arc-length-equally-spaced
+points (point 0 = electrode-proximal end), then for each consecutive frame pair
+within an event decomposes each point's displacement into components **tangent**
+and **normal** to the local arc direction:
+
+```
+v_normal_i     = dot(p_i(t+1) − p_i(t), normal_i)  / Δt    ← lateral sweep
+v_tangential_i = dot(p_i(t+1) − p_i(t), tangent_i) / Δt    ← along-arc motion
+```
+
+Only complete-arc frames are used (truncated skeletons make the parameterisation
+unreliable). Output: `arc_shape_velocities.csv` with `norm_pos = seg_idx /
+(N − 1)`.
+
+---
+
+## 8. Uncertainty budget (`uncertainty.py`)
+
+**Single source of truth** for the systematic budget the event/Fourier stages
+previously lacked. The old `vel_ms_err` was only the OLS slope SE (random
+fitting error) — on the target recording a misleadingly tight median 0.10 m/s.
+Reported velocities must additionally carry the **calibration (px/mm)** and
+**fps** systematics.
+
+For `v = slope · FPS / px_per_mm / 1000`, propagating uncorrelated terms:
+
+```
+(σ_v / |v|)²  =  (σ_v_stat / |v|)²  +  (σ_fps / FPS)²  +  (σ_pxmm / px_per_mm)²
+```
+
+| Quantity | Default | Justification |
+|---|---|---|
+| `SIGMA_FPS_REL` | 0.1 % | Phantom HS crystal ≈ 50–100 ppm; 0.1 % is conservative for trig-mode |
+| `SIGMA_PXMM_REL` | 5 % | √2 × 1 px click localisation / ≈ 26.56 px apex gap ≈ 5.3 % |
+
+Both are relative 1-σ and **overridable per-recording** (`--pxmm-rel-err`,
+`--fps-rel-err`), logged in `run_metadata.json`.
+`pxmm_uncertainty_from_calibration()` can derive σ_pxmm from the measured
+`min_gap_px` instead of the flat default.
+
+**Columns written** by `event_velocity.py`: `vel_ms_err_stat`, `vel_ms_err_sys`,
+`vel_ms_err_total` (the legacy `vel_ms_err` is retained = stat only).
+**Frequencies** (`f = k · FPS / N`) have no spatial term, so
+`σ_f / f = σ_fps / FPS`; `fourier_analysis.py` annotates each peak as `f ± σ_f`.
+
+`recompute_uncertainty.py` derives the three velocity columns on existing
+`_results/` directories **without re-running the pipeline** (a pure derived
+column — point estimates are unchanged). The net effect on the target recording:
+median velocity 9.47 → **9.47 ± 0.59 m/s**, an error bar ≈ 6× the old
+slope-SE-only value because the calibration term had been entirely outside the
+budget.
+
+---
+
+## 9. Robustness: sensitivity, repeats, temporal drift
+
+### 9.1 Sensitivity sweep (`sensitivity_sweep.py`)
+
+Tier-A (post-hoc; re-reads `measurements_all_events.csv`, no re-detection). A
+parameter is flagged **UNSTABLE** if shifting it moves the headline median by
+more than the systematic floor `σ_floor = √(σ_pxmm² + σ_fps²) × median_v`.
+
+| Parameter | Range swept | Result |
+|---|---|---|
+| `local_vel_n` | 5, 7, 10, 15, 20 | stable for **N ≥ 7**; N = 5 flagged UNSTABLE |
+| `flash_arc_width` | 12–50 px | all STABLE (max |Δ| 0.026 m/s) |
+| `flash_eff_width` | 15–50 | all STABLE |
+
+Tier B (varying `bright_thresh` and re-detecting) is **not** part of the routine
+sweep — see §18.
+
+### 9.2 Repeat handling (`sweep_utils.py`)
+
+The 0.4 mm / 1500 mL condition has two recordings whose per-event medians
+disagree by 3.94 m/s. A matched-settings diagnostic (reprocessing chunk 1 of
+each at identical `bright_thresh`) showed the gap is **+3.35 m/s of genuine
+run-to-run physics**, not a threshold or calibration artefact (the high-flow
+plume actually *requires* the elevated threshold; dropping to the sweep-typical
+175 balloons the connected region and degenerates the skeleton).
+
+`sweep_utils.py` provides an `.excluded_from_sweep` sentinel-file mechanism:
+dropping that file (with a written rationale) into a `_results/` directory causes
+the four cross-recording aggregators (`reynolds_comparison.py`,
+`mode_ratio_vs_re.py`, `asymmetry_vs_time.py`, `warmup_time.py`) to skip it. The
+`_repeat` is excluded on this basis; its per-recording figures remain valid, and
+per-recording diagnostics still process it.
+
+### 9.3 Temporal drift & long recordings
+
+`temporal_velocity_profiles.py` (first-vs-last events) and `warmup_time.py`
+(exponential fit) test whether arc dynamics drift within a recording. The short
+(~95 ms) recordings have too few events to resolve a sign; the **1.2 mm
+recording is the exception**. It is the only long-duration file (873 563 frames =
+**4.37 s**), and the earlier robustness pass had analysed only a ~10 % prefix.
+A go/no-go probe (`long_video_probe.py`) flagged drift, so it was reprocessed
+end-to-end:
+
+| Metric | 10 % prefix | Full 4.37 s |
+|---|---:|---:|
+| events fitted | 74 | **669** |
+| median v (m/s) | 3.68 | **4.21** |
+| \|asym\| median | 0.213 (initial transient) | **0.187** (time-average) |
+
+The full record shows a **stable positive velocity drift** (≈ +0.34 m/s per
+second; KS p down to 10⁻⁴¹), the only recording where the sign does not flip
+across group sizes. The exponential warm-up fit does **not** converge
+(τ = 13.9 ± 16.8 s, R² ≈ 0): 4.37 s is too short relative to the timescale.
+**Lesson:** long `.cine` files must be probed before trusting a prefix.
+
+---
+
+## 10. Reynolds comparison (`reynolds_comparison.py`)
+
+Built to relate arc behaviour to the **gas-flow** Reynolds number across the
+sweep. Definitions (cited in every figure caption):
+
+- Characteristic length **L = nozzle diameter d**.
+- Characteristic velocity **U = bulk gas velocity** `v_bulk = Q / (π/4 · d²)` —
+  **not** the arc velocity.
+- Fluid: CO₂ at T = 295.15 K, P = 101.325 kPa. ρ = 1.815 kg·m⁻³ (CRC Handbook
+  90th ed.); μ = 1.48 × 10⁻⁵ Pa·s (Lemmon & Jacobsen 2004).
+- **Re = ρ · v_bulk · d / μ.**
+- Default uncertainties: σ_d/d = 5 %, σ_Q/Q = 5 %, σ_T = 2 K, σ_P = 1 kPa,
+  σ_μ/μ = 2 % (override at CLI when machine drawings / MFC calibrations exist).
+
+Repeats per condition feed the error bars. Outputs (each 300 DPI PNG + vector
+PDF + sidecar caption): `reynolds_arc_velocity`, `reynolds_mode_b_fraction`,
+`reynolds_cycle_frequency` (plus `mode_ratio_vs_re`, `asymmetry_vs_re`).
+
+| d (mm) | Q (mL/min) | repeats | Re | σ_Re | Ma | median v_arc (m/s) |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1.2 | 1500 | 1 | 3 253 | 406 | 0.08 | 4.21 |
+| 0.8 | 1500 | 1 | 4 879 | 608 | 0.18 | 7.24 |
+| 0.4 | 1000 | 1 | 6 506 | 811 | 0.49 | 9.47 |
+| 0.4 | 1500 | 1 (repeat excluded) | 9 759 | 1 217 | 0.74 | 10.01 |
+
+> **Confound (in every caption):** changing nozzle diameter changes **both** Re
+> and reactor geometry (impingement distance, divergence angle). A visible trend
+> therefore conflates fluid-dynamic and geometric effects; isolating Re alone
+> needs fixed-d, swept-Q, but the sweep has at most two Q per d.
+>
+> **Compressibility caveat:** v_bulk reaches ≈ 199 m/s at d = 0.4 mm /
+> 1500 mL/min (Ma ≈ 0.74; a_CO₂ ≈ 270 m/s). The reported Re is the
+> *incompressible-equivalent* number using ambient ρ; the small-nozzle corner is
+> firmly compressible and the nozzle-exit density is not the ambient ρ used here.
+
+---
+
+## 11. Outputs & provenance
+
+| File | Description |
+|---|---|
+| `tiff/` | numbered 8-bit TIFF chunks |
+| `j_geometry.json` | min gap, px/mm, gap_row, finite-segment flags |
+| `blade_lines.npy` / `electrode_edges.npz` | finite electrode geometry |
+| `measurements.csv` | merged per-frame metrics |
+| `event_summary.csv` | one row per event incl. velocity, R², Mode A/B, σ columns |
+| `measurements_all_events.csv` | per-frame data with event IDs + local velocity |
+| `re_strikes_qa.csv` | authoritative Mode A/B |
+| `events/` | per-event frame and dynamics CSVs |
+| `velocity_map_local.*` | 2-D local-velocity map (`build_velocity_map.py`) |
+| `fourier_*` | cycle spectra with σ_f-annotated peaks |
+| `run_metadata.json` | **provenance** (below) |
+| `Reynolds_comparison/` | cross-recording figures (§10) |
+
+**`run_metadata.json` provenance** carries, for every run: fps, px/mm + source,
+`bright_thresh` + source, geometry mode + finite-segment flags, gap_row,
+`local_vel_n`, the σ_pxmm/σ_fps budget, git hash, and UTC timestamp — so every
+reported number is auditable end to end.
+
+---
+
+# PART II — Legacy TIFF / Radon pipeline (reference only)
+
+> **Superseded.** The sections below describe the *original* J pipeline
+> (`plasma_utils/*`, `analyze_tiff.py`): per-frame Otsu detection, nephrogram
+> construction, and Radon-transform velocity extraction. They are retained for
+> historical reference and for the legacy method-comparison figure only. For new
+> measurements use Part I.
+
+## 12. Arc detection — percentile-filtered Otsu (legacy)
 
 **File:** `plasma_utils/image.py : binarize()`
 
-The arc occupies a very small bright region on a near-black background.
-A global Otsu threshold computed on the full image histogram is biased
-heavily toward the background mode and tends to over-threshold the arc.
-
-### Percentile-filtered Otsu
-
-We apply Otsu's method only to the upper 50th-percentile pixel values
-(i.e. pixels above the per-frame median).  This concentrates the
-threshold computation around the arc-intensity distribution.
+A global Otsu threshold on the full histogram is biased toward the background.
+The legacy path applied Otsu only to pixels above the per-frame median:
 
 ```
 gray[gray > percentile(gray, 50)]  → bright_pixels
@@ -110,491 +478,131 @@ threshold = threshold_otsu(bright_pixels)
 binary = gray > threshold
 ```
 
-### Morphological cleanup
+Morphological cleanup: closing (disk r = 3) to fill channel gaps, opening
+(disk r = 2) to remove speckle, then largest-connected-component selection.
 
-| Operation | Kernel radius | Purpose |
-|---|---|---|
-| Closing (disk) | 3 px | Fills small gaps/breaks in the arc channel |
-| Opening (disk) | 2 px | Removes isolated speckle noise |
+> Replaced in Part I §4 by a fixed DN threshold, which is more stable on the
+> dark inter-stroke frames.
 
-### Largest-component selection
+## 13. Skeletonisation & path ordering (shared concept)
 
-After morphological cleanup, the single largest connected component is
-retained.  This rejects small satellite blobs from electrode glow or
-reflections.
+The mask is thinned to a 1-px skeleton (Zhang–Suen via
+`skimage.morphology.skeletonize`), then ordered into a connected path by a
+depth-first walk on the 8-connected adjacency graph. Endpoints are degree-1
+skeleton pixels; if none exist the walk starts arbitrarily. (The current path
+uses the same skeleton concept inside `analyze_blade`.)
 
----
-
-## 5 Skeletonisation & Path Ordering
-
-**File:** `plasma_utils/image.py : _skeleton_ordered_coords()`
-
-The arc binary mask is thinned to a 1-pixel-wide skeleton using
-morphological skeletonisation (Zhang–Suen thinning via
-`skimage.morphology.skeletonize`).
-
-The skeleton pixels are then ordered into a connected path from one
-endpoint to the other using a depth-first graph walk on the 8-connected
-pixel adjacency graph.  Endpoints are defined as skeleton pixels with
-exactly one 8-connected neighbour (degree = 1).
-
-If no endpoints are found (closed-loop or isolated pixel), the walk
-starts at an arbitrary skeleton pixel.
-
----
-
-## 6 Physical Calibration
+## 14. Physical calibration — 5th-percentile gap (legacy)
 
 **File:** `plasma_utils/image.py : estimate_px_per_mm()`
 
-Spatial scale is calibrated against the known minimum electrode gap
-(2.4 mm).  The electrode gap in each frame is estimated as the Euclidean
-distance between the two skeleton endpoints (arc tips):
-
 ```
-gap_px[i] = √( (tip_b_row - tip_a_row)² + (tip_b_col - tip_a_col)² )
+gap_px[i]  = ‖tip_b − tip_a‖₂
+px_per_mm  = percentile(gap_px, 5) / electrode_gap_mm
 ```
 
-At electrical breakdown the arc is shortest, corresponding to the minimum
-physical gap.  We take the **5th percentile** of `gap_px` across the
-recording as the minimum:
+The 5th percentile (not the absolute minimum) guards against single-frame
+outliers. Superseded by the explicit J-hook apex-gap calibration in Part I §3.
 
-```
-px_per_mm = percentile(gap_px, 5) / electrode_gap_mm
-```
+## 15. Arc measurements (legacy reference)
 
-Using a percentile (rather than the absolute minimum) guards against
-single-frame outliers from noise.
+`measure_frame()` produced arc length (skeleton px / px-per-mm), FWHM width
+(41-px perpendicular profile, every 5 skeleton px), brightness (mean / peak /
+integrated), centroid, bounding box, tip A/B, electrode gap, and curvature
+(mean |Δθ| along the skeleton). These map directly onto the current per-frame
+measurements (Part I §5), the difference being that the current path measures
+intensity on **raw DN**, not the normalised image.
 
-An explicit pixel size can also be passed via `--pixel-size <mm/px>`.
+## 16. Nephrogram, Radon velocity & velocity-distribution map (legacy)
+
+**Files:** `plasma_utils/nephrogram.py`
+
+- **Nephrogram** — a space–time kymograph: each frame's 2-D field is reduced to a
+  1-D profile (`max` / `mean` / `sum`) along the `vertical` or `horizontal`
+  axis, stacked into a time × space image. Downward-sloping streaks encode
+  propagation; the slope is velocity.
+- **Radon velocity** (`radon_velocity()`) — the dominant streak angle θ over
+  θ ∈ [−80°, 80°] gives `v = cot(θ) · fps / px_per_mm`. (Using tan θ would
+  return the reciprocal — see the original convention note.)
+- **Velocity-distribution map** (`velocity_distribution_map()`) — a sliding
+  temporal window (50 frames, 10-frame hop) histograms the top-30 Radon
+  candidates by magnitude, weighted by spectral energy → a time × velocity map.
+
+> Superseded by the advancing-front regression + sliding-window local velocity
+> (Part I §6) and the local-velocity 2-D map (`build_velocity_map.py`). The
+> central-difference and Radon estimates are retained only for the
+> method-comparison figure.
+
+## 17. Cycle detection & QA frame rendering (legacy)
+
+- **Cycle detection** (`detect_cycles()`) — `scipy.signal.find_peaks` on a 1-D
+  temporal signal (mean nephrogram intensity over the central 20 % of the
+  spatial axis), min prominence 0.5σ, min spacing ≥ 10 µs. Cycle frequency in
+  the current pipeline comes instead from the re-strike interval / Fourier
+  spectrum.
+- **QA frame rendering** (`plasma_utils/qa.py : render_qa_frame()`) — annotated
+  overlays (mask, skeleton, width samples, tips, gap line, centroid, bbox) with
+  a monospace text panel and a γ = 0.5 display stretch (display-only). The
+  current path uses the BLADE QA montages (`qa_restrike`, `filter_audit_montage`).
 
 ---
 
-## 7 Arc Measurements
+## 18. Known limitations & open risks
 
-### 7.1 Arc Length
+Current-pipeline risks (from the June robustness pass — flagged honestly, not
+bugs):
 
-**File:** `plasma_utils/image.py : measure_frame()`
+- **No full pipeline re-run on the target recording.** Existing `_results/`
+  already had `fps = 200000` threaded everywhere; the uncertainty addition is a
+  pure derived recompute, so current `vel_ms` values are byte-identical to a
+  re-run. Defensible, but a shortcut.
+- **Tier-B threshold sweep not run.** `bright_thresh` stability was argued from
+  the arc/plume QA, not a re-detection sweep across `{130…190}`.
+- **Mach > 0.3 at the small-nozzle corner.** Re is incompressible-equivalent;
+  nozzle-exit density is wrong by O(10–30 %) at Ma ≈ 0.49–0.74. Captioned, not
+  corrected.
+- **σ_pxmm assumes isotropic 1-px clicks.** For the hand-segmented J-hook the
+  localisation is correlated and possibly anisotropic; the 5 % default is a
+  floor. Override when better calibration audits exist.
+- **σ_fps default 0.1 %.** Conservative for the crystal but possibly
+  *un*-conservative for trig-mode line-time rounding. A `.cine`-header
+  requested-vs-achievable-fps probe would give a per-recording value.
+- **0.4 mm / 1500 mL is now effectively single-recording** after the repeat
+  exclusion (§9.2). 2–3 more independent recordings (chamber repurged between
+  each) would bracket endogenous run-to-run spread vs setup drift.
+- **Calibration field discrepancy** in the 1.2 mm `j_geometry.json` (8.75 vs
+  11.17; §3) — correct the stored field on the next reprocess.
 
-Arc length is the **skeleton pixel count** multiplied by the pixel pitch:
+Standing measurement limitations:
 
-```
-arc_length_px  = count(skeleton pixels)
-arc_length_mm  = arc_length_px / px_per_mm
-```
-
-This is an estimate of the contour length along the arc centreline.
-Diagonal skeleton steps are not corrected to √2 (the error is small
-for smooth arcs with gentle curvature).
-
-### 7.2 Arc Width (FWHM)
-
-**File:** `plasma_utils/image.py : _fwhm_perpendicular()`
-
-At each sampled skeleton point (every 5 pixels by default), we extract
-an intensity profile perpendicular to the local arc tangent.
-
-The **local tangent** at point `i` is the central difference:
-
-```
-tangent[i] = path[i+1] - path[i-1]   (normalised)
-```
-
-The **perpendicular direction** is the tangent rotated 90 °.
-
-A 41-pixel profile (±20 px either side) is sampled by bilinear
-interpolation along the perpendicular.  The **full width at half maximum
-(FWHM)** of this profile is returned as the local arc width.
-
-```
-width_px  = last_index(profile ≥ peak/2) - first_index(profile ≥ peak/2) + 1
-width_mm  = width_px / px_per_mm
-```
-
-Per-frame statistics: **mean FWHM** and **median FWHM** over all sampled
-skeleton points.
-
-> The FWHM is a proxy for the physical arc channel diameter plus any
-> optical blurring (diffraction + motion blur at 200 kfps).
-
-### 7.3 Brightness Statistics
-
-Computed on arc-masked pixels of the normalised frame:
-
-| Metric | Formula | Physical meaning |
-|---|---|---|
-| `mean_intensity` | mean(gray[binary]) | Time-averaged emissivity proxy |
-| `peak_intensity` | max(gray[binary]) | Hottest / most emissive arc point |
-| `integrated_intensity` | sum(gray[binary]) | Total optical power proxy |
-
-### 7.4 Geometric Descriptors
-
-| Metric | Definition |
-|---|---|
-| Centroid (row, col) | Intensity-weighted mean position of arc pixels |
-| Bounding box | Tight axis-aligned rectangle around the binary mask |
-| Tip A, Tip B | First and last points on the ordered skeleton path |
-| Electrode gap (px, mm) | Euclidean distance between tips |
-
-### 7.5 Curvature
-
-Mean absolute angular change along the skeleton:
-
-```
-angles[i] = arctan2(Δrow[i], Δcol[i])   for each step
-δθ[i]     = wrap_to_π( angles[i+1] - angles[i] )
-curvature  = mean(|δθ|)   [rad / px]
-```
-
-High curvature indicates a strongly bent arc (common mid-propagation
-cycle when the arc bows downward under CO₂ flow).
+- **Motion blur** at the few-µs exposure inflates FWHM width ∝ tip speed.
+- **Single-distance calibration**; no lens-distortion correction.
+- **Per-frame normalisation** (display/legacy) means cross-frame brightness must
+  use `integrated_intensity` on raw DN.
 
 ---
 
-## 8 Nephrogram Construction
-
-**File:** `plasma_utils/nephrogram.py : build_nephrogram()`
-
-A nephrogram is a **space–time kymograph**: a 2-D image in which
-- **rows** correspond to time (frame index)
-- **columns** correspond to spatial position along the projection axis
-
-### Projection modes
-
-For each frame, the full 2-D intensity field is reduced to a 1-D profile:
-
-| Mode | Formula | Best for |
-|---|---|---|
-| `max` | column-wise maximum | Locating arc position (sparse bright object) |
-| `mean` | column-wise mean | Integrated emissivity |
-| `sum` | column-wise sum | Total optical power |
-
-### Projection axes
-
-| Axis | Spatial direction | Interpretation |
-|---|---|---|
-| `vertical` | Row axis (y) | Arc reaching downward; captures propagation depth |
-| `horizontal` | Column axis (x) | Arc drifting laterally between electrodes |
-
-### Post-processing
-
-After stacking the 1-D profiles into a 2-D image:
-1. Optional Gaussian smoothing (σ = 0.8 px by default) to suppress inter-frame jitter
-2. Linear stretch to [0, 1]
-
-### Reading the nephrogram
-
-- **Bright horizontal band** at a given time row = arc present at that spatial position
-- **Downward-sloping bright streak** = arc tip propagating downward over time
-- The **slope** of bright features encodes propagation velocity:
-  `v = Δ(spatial axis) / Δt`
-
----
-
-## 9 Propagation Velocity Extraction (Radon — legacy)
-
-**File:** `plasma_utils/nephrogram.py : radon_velocity()`
-
-Propagation velocities are extracted from the nephrogram using the
-**Radon transform** (equivalent to a projective Hough transform).
-
-The nephrogram is treated as an image in (space × time) coordinates and
-transposed to (space, time) for the Radon call.  For each projection
-angle θ ∈ [−80°, 80°], the Radon sinogram column energy is computed.
-The angle maximising column energy corresponds to the dominant bright
-streak direction.
-
-```
-v_mm_s = cot(θ) × fps / px_per_mm
-        = cos(θ)/sin(θ) × fps / px_per_mm
-```
-
-> **Convention note:** skimage's Radon transform uses θ measured from the
-> *vertical* (space) axis of the (space × time) image.  θ = 0 captures
-> vertical lines (instantaneous events); θ → 90° captures horizontal lines
-> (stationary features).  A feature moving at v px/frame makes angle
-> arctan(v) from the time axis = (90° − arctan(v)) from the space axis,
-> so the Radon peak is at θ = 90° − arctan(v), giving v = cot(θ).
-> Using tan(θ) would return the reciprocal of the true velocity.
-
-Multiple velocity candidates are returned (top-N by energy), enabling
-identification of co-propagating features (e.g., the propagating arc
-tip and the stationary glow region).
-
----
-
-## 10 Event-Based Velocity Analysis
-
-**File:** `event_velocity.py`
-
-The event-based pipeline supersedes the Radon approach for quantitative velocity measurements.  It operates on the per-frame `measurements_all.csv` produced by the TIFF analysis pipeline and produces event-level statistics plus per-frame local velocities.
-
-### 10.1 Discharge Event Detection
-
-A new primary discharge event is declared when the arc tip returns to within `NUCLEATION_SLACK_FRAC` (default 15%) of the effective arc range above the electrode row.  This is a data-driven threshold: it scales with the measured arc range for each recording rather than using a hard-coded pixel distance.
-
-The electrode row is estimated as the 5th percentile of `arc_tip_row` from complete-arc frames (frames where the arc bridges both electrodes).  The effective arc range `L_eff_px` is then `p90(tip_rows) − electrode_row`, and the nucleation threshold is `electrode_row + 0.15 × L_eff_px`.
-
-Within a primary event, intermediate retreats larger than 50% of the current arc extension are labelled **sub-events** — these correspond to partial re-ignition without full return to the gap (Fridman et al. 2005).  Detection gaps longer than 500 frames (~2.5 ms) always force a new primary event.
-
-### 10.2 Advancing-Front Regression
-
-For each event, only frames where the arc tip is at a new maximum row (the monotonic advancing envelope) are used for regression.  Retreating frames — including sub-event oscillations — are excluded.  A least-squares line is then fit to the advancing-front trajectory:
-
-```
-tip_row = slope × frame + intercept
-velocity = slope [px/frame] × FPS / px_per_mm / 1000   →   m/s
-```
-
-R² is computed on the advancing-front frames.  An R² near 1 indicates a steady linear advance; lower values indicate irregular or multi-phase propagation.
-
-Regression preferentially uses complete-arc frames (where the arc bridges both electrodes and the tip position is unambiguous).  When fewer than `MIN_EVENT_FRAMES` complete frames exist within an event, all detected frames are used instead.
-
-### 10.3 Sliding-Window Local Velocity
-
-A per-frame local velocity is computed for every advancing-front frame using a centered OLS window of `LOCAL_VEL_N = 10` advancing-front neighbors:
-
-```
-window = f_front[ max(0, k − 5) : min(n, k + 6) ]
-local_vel_ms = slope(window) × FPS / px_per_mm / 1000
-```
-
-This is equivalent to a Savitzky-Golay first-derivative filter.  It provides time-resolved velocity that resolves within-event acceleration and deceleration while remaining resistant to frame-to-frame noise.  The local velocity is NaN for retreating frames and for events too short to fit.
-
-### 10.4 Mode A / Mode B Classification
-
-Gliding arcs exhibit two distinct propagation modes (Czernichowski 1994; Zhang et al. 2020):
-- **Mode A** — the arc extinguishes completely and re-nucleates at the minimum electrode gap.
-- **Mode B** — the previous arc channel persists partially and the next event re-ignites (back-breakdown) at an intermediate position away from the gap.
-
-Classification is based on a dimensionless **normalised nucleation position**:
-
-```
-norm_nucleation_pos = (tip_row_start − electrode_row) / L_eff_px
-```
-
-This ratio is in [0, 1] and requires no spatial calibration.  Events with `norm_nucleation_pos > NUCLEATION_SLACK_FRAC` are labelled Mode B; all others are Mode A.  The threshold is self-consistent with the event detector: an event the detector considers "returned to the gap" has `norm_nucleation_pos ≤ 0.15` by construction.
-
-The frames-since-last-event gap (`inter_event_gap_frames`) is stored as a secondary observable.  Mode B events are expected to have shorter gaps (the previous channel has not fully cooled before back-breakdown), but this is not used for primary classification.
-
-### 10.5 Arc Shape Tracking and Normal Velocity
-
-**File:** `arc_shape.py`
-
-The arc is a deformable filament, not a rigid body.  The tip velocity measured
-by the advancing-front regression captures only the leading edge; the rest of
-the arc body can flex, bow, and sweep laterally independently.  `arc_shape.py`
-measures this full-body deformation by tracking N equally-spaced points along
-the arc skeleton frame-to-frame.
-
-**Arc parameterization** — For each detected frame, the ordered skeleton path
-is resampled to N points equally spaced by arc length using linear interpolation:
-
-```
-s_i = i × L_total / (N − 1),   i = 0, 1, ..., N − 1
-```
-
-Point 0 is always the electrode-proximal end (smallest row), so the
-parameterisation is consistent across frames within an event.
-
-**Velocity decomposition** — For each consecutive frame pair (t, t+1) within
-the same event, the displacement at each arc point is decomposed into components
-parallel and perpendicular to the local arc tangent:
-
-```
-tangent_i(t)  = (p_{i+1}(t) − p_{i−1}(t)) / |...|     (central difference)
-normal_i(t)   = tangent rotated 90°
-v_normal_i    = dot(p_i(t+1) − p_i(t), normal_i(t)) / Δt
-v_tangential_i = dot(p_i(t+1) − p_i(t), tangent_i(t)) / Δt
-```
-
-The tangential component at the arc tip (i = N−1) approximates the tip velocity
-from `event_velocity.py`, but is computed on ALL consecutive frame pairs
-(not only the advancing front), so it also captures retreating motion.
-The normal component is physically distinct: it measures lateral sweep driven
-by gas flow and electromagnetic forces.
-
-Only complete-arc frames (`arc_complete == True`) are used.  These are frames
-where the arc bridges both electrodes, giving reliable skeleton endpoints and a
-well-defined path from electrode to tip.  Partial-arc frames are excluded because
-the skeleton is truncated at one end, making the arc-length parameterisation and
-normal decomposition unreliable.
-
-**Output** — `arc_shape_velocities.csv` with columns:
-`file, frame_t, frame_t1, event_id, seg_idx, norm_pos, v_normal_ms, v_tangential_ms, arc_length_px`
-
-where `norm_pos = seg_idx / (N − 1)` is the normalized arc-length position.
-
-### 10.6 Per-Event Data Output
-
-The pipeline writes a structured `events/` directory alongside the combined CSVs:
-
-```
-events/
-    events_index.csv          — one row per event: velocity, R², duration,
-                                 mode, norm_nucleation_pos, sub_event_count
-    event_NNNN_frames.csv     — all frame-level rows for event NNNN
-    event_NNNN_dynamics.csv   — advancing-front local velocities for NNNN
-```
-
-Per-event figures (two-panel: arc-tip trajectory + local velocity profile) can be generated with `per_event_figures.py events/`.
-
----
-
-## 11 Velocity Distribution Map
-
-**File:** `plasma_utils/nephrogram.py : velocity_distribution_map()`
-
-To capture time-resolved velocity information, a sliding temporal window
-(default 50 frames wide, 10-frame hop) is applied to the nephrogram.
-In each window, the top-30 Radon velocity candidates are histogrammed by
-their velocity magnitude, weighted by their spectral energy.
-
-The resulting 2-D map (time × velocity) shows how the **distribution of
-propagation velocities** evolves through the recording.  This is
-equivalent to a time-resolved power spectrum of the spatial velocity field.
-
----
-
-## 12 Cycle Detection
-
-**File:** `plasma_utils/nephrogram.py : detect_cycles()`
-
-Arc propagation in CO₂ is cyclic: the arc breaks down at the electrode
-gap, propagates (extends) driven by the gas flow, and re-strokes.  Each
-cycle is visible as a repeating pattern in the nephrogram.
-
-To detect cycles:
-1. A 1-D temporal signal is computed by averaging nephrogram intensity
-   over the central 20% of the spatial axis (where propagation is most
-   pronounced).
-2. `scipy.signal.find_peaks` is applied with a minimum prominence of
-   0.5 × signal standard deviation and a minimum inter-peak distance
-   corresponding to ≥ 10 µs (at 200 kfps = 2 frames).
-3. Peak frame indices → cycle periods → mean frequency.
-
----
-
-## 13 QA Frame Rendering
-
-**File:** `plasma_utils/qa.py : render_qa_frame()`
-
-QA frames are annotated visualisations of selected frames that allow
-rapid manual inspection of the detection and measurement quality.
-
-### Overlays
-
-| Overlay | Colour | Description |
-|---|---|---|
-| Arc mask fill | Magenta (α = 0.25) | Thresholded arc region |
-| Skeleton | Cyan dots | 1-px-wide centreline |
-| Width sample lines | Orange | ±12 px perpendicular segments at sampled skeleton points |
-| Arc tips | Yellow circles | Skeleton endpoints (electrode contact proxies) |
-| Electrode gap | Yellow dashed line | Straight line connecting tips |
-| Centroid | Lime cross (+) | Intensity-weighted arc centroid |
-| Bounding box | White dashed rectangle | Tight axis-aligned bounding rectangle |
-
-### Text panel
-
-Frame number, time in µs, arc length, mean FWHM width, brightness
-statistics, electrode gap, and curvature are printed in a monospace
-overlay in the top-left corner.
-
-### Display gamma
-
-The base image is displayed with γ = 0.5 (square-root stretch) to make
-the dim arc region visible while preserving dynamic range for overlays.
-This is a display-only adjustment; all measurements use the linear
-normalised values.
-
----
-
-## 14 Output Files
-
-| File | Description |
-|---|---|
-| `measurements.csv` | Per-frame table: all ArcMeasurement fields + time |
-| `summary_dashboard.png` | 6–10 panel figure: time series, nephrogram, velocity map |
-| `nephrogram_vertical.png` | Vertical-axis nephrogram with calibrated axes |
-| `nephrogram_horizontal.png` | Horizontal-axis nephrogram (if `--nephrogram-axis both`) |
-| `velocity_map.png` | Time-resolved velocity distribution map |
-| `qa_frames/qa_NNNNNN.png` | Annotated QA frames (every `--qa-interval` frames) |
-| `METHODS.md` | This document |
-
-### CSV column reference
-
-| Column | Unit | Description |
-|---|---|---|
-| `frame` | — | Frame index (0-based) |
-| `time_s` | s | Frame timestamp |
-| `arc_detected` | bool | Was an arc successfully detected? |
-| `area_px` | px² | Binary arc mask area |
-| `arc_length_px` | px | Skeleton pixel count |
-| `arc_length_mm` | mm | Physical arc length |
-| `arc_width_px_mean` | px | Mean FWHM across skeleton samples |
-| `arc_width_mm_mean` | mm | Physical mean FWHM |
-| `mean_intensity` | — | Mean norm. intensity of arc pixels |
-| `peak_intensity` | — | Max norm. intensity in arc |
-| `integrated_intensity` | — | Sum of norm. intensity in arc |
-| `centroid_row/col` | px | Intensity-weighted centroid |
-| `tip_a/b_row/col` | px | Skeleton endpoint coordinates |
-| `electrode_gap_px/mm` | px / mm | Distance between tips |
-| `curvature_mean` | rad/px | Mean skeleton angular change |
-| `bbox_*` | px | Bounding box corners |
-
----
-
-## 15 Known Limitations & Future Work
-
-- **Motion blur:** At 200 kfps with a bright arc, individual frames may
-  show motion blur.  The FWHM width metric therefore includes a blurring
-  contribution proportional to arc tip velocity × exposure time.
-  Future: deblur using the known tip velocity from the nephrogram.
-
-- **Otsu bias in very dim frames:** During the inter-stroke dark phase,
-  Otsu may segment noise.  The largest-component filter mitigates this,
-  but `arc_detected = False` frames should be cross-checked manually.
-
-- **Single-electrode-gap calibration:** Physical scale is derived from
-  one known distance (electrode gap at breakdown).  Any lens distortion
-  across the field of view is not corrected.  Future: calibration grid.
-
-- **Velocity wrap-around:** The Radon search is limited to ±80°.
-  Very fast propagation events (steep streaks in the nephrogram) may
-  alias to the boundary.  Extend `angle_range_deg` if needed.
-
-- **Colour / multi-channel TIFF:** The loader converts colour TIFFs to
-  grayscale by luminance averaging.  Spectroscopic multi-band recordings
-  should be analysed channel-by-channel with the `load_tiff` return value.
-
----
-
-## 16 References
+## 19. References
 
 1. Otsu, N. (1979). "A threshold selection method from gray-level histograms."
    *IEEE Trans. Syst. Man Cybern.* **9**(1), 62–66.
-
 2. Zhang, T. Y., & Suen, C. Y. (1984). "A fast parallel algorithm for thinning
    digital patterns." *Commun. ACM* **27**(3), 236–239.
-
-3. Deans, S. R. (1983). *The Radon Transform and Some of Its Applications.*
-   Wiley.
-
+3. Deans, S. R. (1983). *The Radon Transform and Some of Its Applications.* Wiley.
 4. van der Walt, S. et al. (2014). "scikit-image: image processing in Python."
    *PeerJ* **2**, e453.
-
-5. Lieberman, M. A., & Lichtenberg, A. J. (2005).
-   *Principles of Plasma Discharges and Materials Processing.* Wiley.
-
-6. Czernichowski, A. (1994). "Gliding arc: applications to engineering and environment
-   control." *Pure and Applied Chemistry* **66**(6), 1301–1310.
-
+5. Lieberman, M. A., & Lichtenberg, A. J. (2005). *Principles of Plasma
+   Discharges and Materials Processing.* Wiley.
+6. Czernichowski, A. (1994). "Gliding arc: applications to engineering and
+   environment control." *Pure Appl. Chem.* **66**(6), 1301–1310.
 7. Zhang, H., et al. (2020). "Optical study of gliding arc discharge modes."
    *IET High Voltage* **5**(4), 386–392.
-
-8. Fridman, A., Gutsol, A., & Kennedy, L. A. (2005). "Comparison of non-equilibrium
-   plasma species in different electrical discharges." In *Non-Equilibrium Air Plasmas
+8. Fridman, A., Gutsol, A., & Kennedy, L. A. (2005). *Non-Equilibrium Air Plasmas
    at Atmospheric Pressure.* IOP Publishing.
+9. Lemmon, E. W., & Jacobsen, R. T. (2004). "Viscosity and thermal conductivity
+   equations for nitrogen, oxygen, argon, and air." *Int. J. Thermophys.* **25**,
+   21–69. (CO₂ transport properties; see also *J. Phys. Chem. Ref. Data* 33.)
+10. CRC Handbook of Chemistry and Physics, 90th ed. (2009). CRC Press. (CO₂ density.)
 
 ---
 
