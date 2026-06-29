@@ -1,10 +1,10 @@
 # Plasma Arc Analysis — Methods (CO₂ J-electrode)
 
 > **Living document.** Updated in lockstep with the codebase.
-> Last revised: 2026-06-21
+> Last revised: 2026-06-29
 > **Current pipeline modules:** `run_j_co2.py`, `analyze_blade.py`, `calibrate_j_electrodes.py`,
-> `detect_j_hooks.py`, `event_velocity.py`, `arc_shape.py`, `uncertainty.py`,
-> `sensitivity_sweep.py`, `reynolds_comparison.py`, `build_velocity_map.py`.
+> `detect_j_hooks.py`, `event_velocity.py`, `arc_shape.py`, `npoint_restrike.py`,
+> `uncertainty.py`, `sensitivity_sweep.py`, `reynolds_comparison.py`, `build_velocity_map.py`.
 > **Legacy modules (Part II, reference only):** `plasma_utils/*`, `analyze_tiff.py`.
 > Companion document: `METHODS_BLADE.md` (N₂ blade-electrode experiment).
 
@@ -76,13 +76,15 @@ Mode B; see §6.4).
 
 | Recording | nozzle / flow | n events | median v (m/s) | σ_total (m/s) |
 |---|---|---:|---:|---:|
-| `HS_1.2mm_1500mL_(CO2)` (full, 4.37 s) | 1.2 mm / 1500 | 669 | 4.21 | 0.22 |
-| `HS_0.8mm_1500mL_(CO2)_trig(2)` | 0.8 mm / 1500 | 24 | 7.24 | 0.46 |
-| `HS_0.4mm_1000mL_(CO2)_trig` | 0.4 mm / 1000 | 53 | 9.47 | 0.59 |
-| `HS_0.4mm_1500mL_(CO2)_trig` | 0.4 mm / 1500 | 50 | 10.01 | 0.79 |
-| `HS_0.4mm_1500mL_(CO2)_trig_repeat` | 0.4 mm / 1500 | 31 | 6.07 | 0.52 |
+| `HS_1.2mm_1500mL_(CO2)` (full, 4.37 s) | 1.2 mm / 1500 | 669 | 4.22 | 0.24 |
+| `HS_0.8mm_1500mL_(CO2)_trig(2)` | 0.8 mm / 1500 | 24 | 6.13 | 0.39 |
+| `HS_0.4mm_1000mL_(CO2)_trig` | 0.4 mm / 1000 | 53 | 10.70 | 0.66 |
+| `HS_0.4mm_1500mL_(CO2)_trig` | 0.4 mm / 1500 | 50 | 10.35 | 0.82 |
+| `HS_0.4mm_1500mL_(CO2)_trig_repeat` | 0.4 mm / 1500 | 31 | 6.22 | 0.53 |
 
-The 0.4 mm / 1500 mL pair disagrees by ≈ 3.9 m/s — far more than either
+(Velocities are on the per-video apex-gap calibration, px/mm = `min_gap_px / 2.4`.)
+
+The 0.4 mm / 1500 mL pair disagrees by ≈ 4.1 m/s — far more than either
 recording's σ_total. This is **real run-to-run variability**, not a measurement
 artefact (see §9.2); the `_repeat` is excluded from cross-recording aggregates.
 
@@ -135,24 +137,28 @@ Mode-A/B apex reference position.
 
 ### Spatial calibration (px/mm)
 
-px/mm is **per-recording** and written to `j_geometry.json`. The minimum apex
-gap in pixels divided by 2.4 mm gives the scale. Resolution order at run time:
+The archival CO2 videos have **no ruler in frame**, so the *only* spatial
+calibration is the known minimum electrode gap (2.4 mm). px/mm is therefore
+**derived per-video** from the clicked tip-end separation:
 
 ```
---px-per-mm (CLI)  >  j_geometry.json  >  tiff/calibration.txt  >  9.167 (fallback)
+px/mm = min_gap_px / 2.4 mm        (per recording, from j_geometry.json)
 ```
 
-The fallback `J_PX_PER_MM_DEFAULT = 9.167` is a last resort only; every reported
-recording uses a calibrated per-file value (e.g. 12.5 px/mm for the
-hand-segmented 0.4 mm target).
+There is **no hardcoded px/mm and no numeric fallback**: `run_j_co2.py` computes
+the scale from `min_gap_px / min_gap_mm` and stops with an error if a recording
+has not been gap-calibrated. The `--px-per-mm` CLI flag remains only as an
+explicit debug override (it prints a warning). The per-video values across the
+sweep span ≈ 8.5–11.2 px/mm (e.g. 11.07 for 0.4 mm/1000, 11.17 for 1.2 mm,
+10.33 for 0.8 mm/1500), reflecting that the recordings were taken on different
+days at different magnifications.
 
-> **Calibration provenance — known issue (open).** On the 1.2 mm recording,
-> `j_geometry.json` stores `px_per_mm = 8.75`, but the stored apex gap
-> (`min_gap_px = 26.81`, `min_gap_mm = 2.4`) implies **11.17**. Runs use a
-> `--px-per-mm 11.2` CLI override, so the reported numbers are correct and
-> internally consistent, but the `8.75` field is a stale leftover from a
-> different recording's calibration and should be set to 11.17. It was left
-> unchanged because editing it re-triggers a multi-hour reprocess.
+> **Calibration provenance (resolved 2026-06-25).** The earlier inconsistency —
+> `j_geometry.json` storing a `px_per_mm` field (e.g. 8.75) that disagreed with
+> its own clicked gap — is gone: the field is now always written as
+> `min_gap_px / 2.4` (consistent), and the pipeline ignores the stored field and
+> recomputes from the gap regardless. All recordings were fully re-converted and
+> reprocessed on this calibration.
 
 ---
 
@@ -260,16 +266,34 @@ sweep confirms the headline metric is stable for N ≥ 7.
 
 ### 6.4 Mode A / Mode B classification
 
-From the dimensionless **normalised nucleation position**:
+**Authoritative classifier (`qa_restrike.py` → `re_strikes_qa.csv`).** Mode A/B is
+classified **per re-strike**, not per event (a Mode-B back-breakdown re-ignites
+*inside* an event, so it is invisible to the event detector). A re-strike is the
+local minimum of the arc-tip trajectory between two extension peaks. For each:
 
 ```
-norm_nucleation_pos = (tip_row_start − electrode_row) / L_eff_px
+norm_pos = (tip_min − apex) / L_eff        Mode B if norm_pos > 0.10
 ```
 
-Events with `norm_nucleation_pos > 0.15` are **Mode B** (back-breakdown at an
-intermediate position); the rest are **Mode A** (full extinction, re-ignition at
-the apex). The threshold is self-consistent with the event detector. The
-authoritative Mode A/B record is `re_strikes_qa.csv`.
+Two properties make this **non-circular and flash-clean** (hardened 2026-06-25):
+
+- **apex = the calibrated electrode-gap row** (`gap_row` from `j_geometry.json`,
+  mapped into the `arc_tip_row` coordinate), i.e. the *physical* gap — not a
+  statistical percentile of where the tip happened to retreat to. If `--gap-row`
+  is absent it falls back to the 5th-percentile and the QA says so.
+- **flashes are removed before re-strike detection** (`arc_filter` criterion 3),
+  so saturation bursts cannot create phantom re-strikes or mislabels.
+
+`qa_restrike.py` emits process QA for every recording: `re_strikes_qa.png`
+(trajectory with A/B-coloured re-strikes, the apex line, the cut, and a montage of
+the extreme cases) and `re_strikes_qa_summary.txt` (detected frames, % rejected as
+flash, apex source, thresholds, and the A/B counts).
+
+**Legacy per-event field (do not use for A/B).** `event_summary.csv` also carries
+`mode_eventstart_legacy` from the per-event nucleation position
+(`norm_nucleation_pos = (tip_row_start − electrode_row)/L_eff_px > 0.15`). Because
+an event starts only when the tip returns near the apex, this is **Mode-A-biased**
+and is retained only for provenance.
 
 ### 6.5 Per-event output
 
@@ -278,6 +302,87 @@ whole-event average rate) and the time-resolved `local_vel_median / mean / p10 /
 p90 / peak / max / std`. The full per-frame profile is in
 `events/event_NNNN_dynamics.csv`. For multi-phase events the two diverge — the
 signal that a single average is insufficient.
+
+### 6.6 Whole-arc (N-point) breakpoint re-strike detector (`npoint_restrike.py`)
+
+**Why a complement is needed.** The authoritative re-strike metric (§6.4) is
+built from the **arc-tip** trajectory (`arc_tip_row`, the arc *front* pixel). It
+is structurally **blind** to re-strikes where the tip is invariant but one
+**leg/side** of the arc breaks and re-initiates: the front pixel never moves, so
+no tip cycle is seen. These one-sided "leg" breaks are real Mode-B
+(back-breakdown) events, so the tip metric **undercounts** Mode B. The N-point
+detector tracks the **whole arc** and recovers them. It is a **complement**: the
+tip metric (§6.4) is kept intact as the conservative companion, and both are
+reported.
+
+**Frame set (identical to §6.4).** The rows of `measurements_all_events.csv` with
+`arc_detected==1 AND is_flash==0`, in `frame` order, grouped by `file` (no
+`arc_complete` requirement — the same set the tip detector uses). The N-point arc
+is **reconstructed** for those frames only (analyze_blade is **not** re-run): the
+raw TIFF page is re-binarised with `analyze_blade.binarize` at the recording's
+calibrated `bright_thresh` / `gap_row` / `max_arc_px` (close radius 3, dark-guard
+35, `min_arc_px` 22), then `skeletonize` → `arc_shape.ordered_path` →
+`resample_arc(N)` → `orient_arc` (point 0 electrode-proximal). Per-point depth
+`d_i = row_i − gap_row`; frames whose skeleton/resample fails are skipped.
+
+**Detector (per point, unioned).** For each of the N points, the depth signal is
+smoothed (`uniform_filter1d`, size 3) and `find_peaks(prominence = 0.10·(p90−p5
+of that point's depth), distance ≥ 5)` locates its extensions; a re-strike is the
+`argmin` between consecutive peaks — the **same** collapse-between-extensions
+logic as `qa_restrike.detect_restrikes`, applied per point with a per-point
+adaptive prominence. Events from all N points are **unioned and de-duplicated
+within 5 frames**, keeping the strongest-collapse representative and its
+triggering point index *i*.
+
+**Classifier (per event).** `L_eff` = p90 of the **deepest-point** depth (matches
+`qa_restrike.apex_and_range`). `Mode B` if the deepest-point depth at the trough
+frame > `0.10·L_eff` (arc stayed extended / back-breakdown), else `Mode A` (reset
+to the gap) — the faithful generalisation of the tip `norm_pos` cut. Breakpoint
+position `s = i/(N−1)` (0 = one foot, 1 = the other); tagged **leg** if `s < 0.2
+or s > 0.8`, else **central**. Each event also carries `tip_invisible` (no tip
+re-strike within 5 frames), which isolates the genuinely new leg events.
+
+**Outputs.** `<stem>_results/npoint_restrikes.csv` (one row per event:
+`frame, mode, kind, s, point_idx, breakpoint_depth_mm, deepest_depth_mm,
+strength_px, cycle_frames, tip_invisible`) and the combined
+`Reynolds_comparison/npoint_restrike_summary.csv` (N, n_events, frac_B,
+leg_share_of_B, mean_cycle_ms, Re, d_mm, q_mLpm, is_repeat). `N=10` is the
+headline; `N=15` is used for breakpoint-position localisation.
+
+**Validation (`python npoint_restrike.py validate`).**
+- **V1 — reproduce the tip detector (hard gate).** Re-deriving
+  `detect_restrikes`+`classify`+`apex_and_range` on `arc_tip_row` reproduces every
+  recording's `re_strikes_qa.csv` **exactly** (count + A/B). Reference
+  `HS_0.4mm_1000mL`: **92 re-strikes, 53 A / 39 B, 0.981 ms** — matched. If V1
+  fails the run stops.
+- **V2 — reconstruction fidelity.** On a random sample of detected frames the
+  re-binarised mask **front pixel** equals `arc_tip_row` to **0.0 px** median,
+  proving the binarisation reproduces the pipeline detection. The N-point
+  **deepest centerline** point sits a small, consistent ~2–3 px **above** the
+  front pixel (half the local tip width); this offset is physical, not error, and
+  **cancels** in the A/B cut because both `deepest_depth` and `L_eff` are
+  centerline quantities.
+- **V3 — N-sensitivity.** Re-running at N = 10 / 15 / 20 leaves `n_events`,
+  `frac_B` and `leg_share` stable (e.g. `HS_0.4mm_1000mL`: Δevents = 3,
+  Δfrac_B = 0.008), confirming the headline numbers are not an artefact of N.
+- **V4 — visual audit.** `<stem>_results/npoint_leg_event_audit.png` renders a
+  seeded sample of leg-break, tip-invisible Mode-B events: raw frames spanning
+  each event with the N-point arc overlaid and the triggering point ringed,
+  beside the depth-vs-time traces (tip + per-point, event marked). These confirm
+  the leg points are real one-sided breakups, not skeleton/resample noise.
+- **V5 — current-trace hook.** `crosscorrelate_current_trace()` is a documented
+  TODO: true event-count validation needs the oscilloscope current trace (does a
+  breakdown pulse coincide with each detected event?), which is not yet available
+  for these archival recordings.
+
+**Caveat carried over.** `arc_filter.is_flash`'s `eff_width = area/arc_length_px`
+leg uses `arc_length_px = len(ordered_skeleton_coords)`, which follows only one
+skeleton branch and so **under-measures forked arcs**; this over-flags ~10–19 % of
+real deep **forked** arcs as "flash" and drops them from the frame set. It does
+**not** change the tip `frac_B` (the dropped frames carry no tip re-strike there),
+but it biases residence/length/velocity stats and removes some frames the N-point
+detector would otherwise see — i.e. the leg-share reported here is, if anything, a
+**lower bound**.
 
 ---
 
@@ -333,9 +438,9 @@ Both are relative 1-σ and **overridable per-recording** (`--pxmm-rel-err`,
 `recompute_uncertainty.py` derives the three velocity columns on existing
 `_results/` directories **without re-running the pipeline** (a pure derived
 column — point estimates are unchanged). The net effect on the target recording:
-median velocity 9.47 → **9.47 ± 0.59 m/s**, an error bar ≈ 6× the old
-slope-SE-only value because the calibration term had been entirely outside the
-budget.
+median velocity **10.70 ± 0.66 m/s** (σ_stat 0.30 ⊕ σ_sys 0.54), an error bar
+≈ 2× the slope-SE-only value because the calibration term had been entirely
+outside the budget.
 
 ---
 
@@ -359,40 +464,40 @@ sweep — see §18.
 ### 9.2 Repeat handling (`sweep_utils.py`)
 
 The 0.4 mm / 1500 mL condition has two recordings whose per-event medians
-disagree by 3.94 m/s. A matched-settings diagnostic (reprocessing chunk 1 of
-each at identical `bright_thresh`) showed the gap is **+3.35 m/s of genuine
-run-to-run physics**, not a threshold or calibration artefact (the high-flow
+disagree by ≈ 4.1 m/s (10.35 vs 6.22). A matched-settings diagnostic
+(reprocessing chunk 1 of each at identical `bright_thresh`) showed the gap is
+**genuine run-to-run physics**, not a threshold or calibration artefact (the high-flow
 plume actually *requires* the elevated threshold; dropping to the sweep-typical
 175 balloons the connected region and degenerates the skeleton).
 
 `sweep_utils.py` provides an `.excluded_from_sweep` sentinel-file mechanism:
 dropping that file (with a written rationale) into a `_results/` directory causes
-the four cross-recording aggregators (`reynolds_comparison.py`,
-`mode_ratio_vs_re.py`, `asymmetry_vs_time.py`, `warmup_time.py`) to skip it. The
+the cross-recording aggregators (`reynolds_comparison.py`,
+`mode_ratio_vs_re.py`, `asymmetry_vs_time.py`) to skip it. The
 `_repeat` is excluded on this basis; its per-recording figures remain valid, and
 per-recording diagnostics still process it.
 
 ### 9.3 Temporal drift & long recordings
 
-`temporal_velocity_profiles.py` (first-vs-last events) and `warmup_time.py`
-(exponential fit) test whether arc dynamics drift within a recording. The short
-(~95 ms) recordings have too few events to resolve a sign; the **1.2 mm
-recording is the exception**. It is the only long-duration file (873 563 frames =
-**4.37 s**), and the earlier robustness pass had analysed only a ~10 % prefix.
-A go/no-go probe (`long_video_probe.py`) flagged drift, so it was reprocessed
-end-to-end:
+`temporal_velocity_profiles.py` (first-vs-last events) tests whether arc dynamics
+drift within a recording. The short (~95 ms) recordings have too few events to
+resolve a sign; the **1.2 mm recording is the exception**. It is the only
+long-duration file (873 563 frames = **4.37 s**), and the earlier robustness pass
+had analysed only a ~10 % prefix. A go/no-go probe (`long_video_probe.py`)
+flagged drift, so it was reprocessed end-to-end:
 
 | Metric | 10 % prefix | Full 4.37 s |
 |---|---:|---:|
 | events fitted | 74 | **669** |
-| median v (m/s) | 3.68 | **4.21** |
+| median v (m/s) | 3.68 | **4.22** |
 | \|asym\| median | 0.213 (initial transient) | **0.187** (time-average) |
 
 The full record shows a **stable positive velocity drift** (≈ +0.34 m/s per
 second; KS p down to 10⁻⁴¹), the only recording where the sign does not flip
-across group sizes. The exponential warm-up fit does **not** converge
-(τ = 13.9 ± 16.8 s, R² ≈ 0): 4.37 s is too short relative to the timescale.
-**Lesson:** long `.cine` files must be probed before trusting a prefix.
+across group sizes. **Lesson:** long `.cine` files must be probed before trusting
+a prefix. (An exponential warm-up *time-constant* fit was dropped: 4.37 s is too
+short relative to the timescale, so τ was unresolvable, R² ≈ 0 — the τ
+quantification and its figures were removed as uninformative.)
 
 ---
 
@@ -412,14 +517,20 @@ sweep. Definitions (cited in every figure caption):
 
 Repeats per condition feed the error bars. Outputs (each 300 DPI PNG + vector
 PDF + sidecar caption): `reynolds_arc_velocity`, `reynolds_mode_b_fraction`,
-`reynolds_cycle_frequency` (plus `mode_ratio_vs_re`, `asymmetry_vs_re`).
+`reynolds_cycle_time` (mean re-strike cycle **duration in ms**, period =
+1000·cycle_frames/fps) plus `mode_ratio_vs_re`, `asymmetry_vs_re`.
 
 | d (mm) | Q (mL/min) | repeats | Re | σ_Re | Ma | median v_arc (m/s) |
 |---:|---:|---:|---:|---:|---:|---:|
-| 1.2 | 1500 | 1 | 3 253 | 406 | 0.08 | 4.21 |
-| 0.8 | 1500 | 1 | 4 879 | 608 | 0.18 | 7.24 |
-| 0.4 | 1000 | 1 | 6 506 | 811 | 0.49 | 9.47 |
-| 0.4 | 1500 | 1 (repeat excluded) | 9 759 | 1 217 | 0.74 | 10.01 |
+| 1.2 | 1500 | 1 | 3 253 | 406 | 0.08 | 4.22 |
+| 0.8 | 1500 | 2 | 4 879 | 608 | 0.18 | 7.01 |
+| 0.4 | 1000 | 1 | 6 506 | 811 | 0.49 | 10.70 |
+| 0.4 | 1500 | 1 (repeat excluded) | 9 759 | 1 217 | 0.74 | 10.35 |
+
+The arc velocity rises with Re from 4.22 m/s (1.2 mm) to ≈ 10.7 m/s at the
+0.4 mm / 1000 point, then is **flat-to-slightly-lower** (10.35 m/s) at the
+highest-Re 0.4 mm / 1500 point — i.e. the trend is monotone up to a plateau, not
+monotone across the whole range (the geometry × Re confound below applies).
 
 > **Confound (in every caption):** changing nozzle diameter changes **both** Re
 > and reactor geometry (impingement distance, divergence angle). A visible trend
@@ -552,10 +663,11 @@ intensity on **raw DN**, not the normalised image.
 Current-pipeline risks (from the June robustness pass — flagged honestly, not
 bugs):
 
-- **No full pipeline re-run on the target recording.** Existing `_results/`
-  already had `fps = 200000` threaded everywhere; the uncertainty addition is a
-  pure derived recompute, so current `vel_ms` values are byte-identical to a
-  re-run. Defensible, but a shortcut.
+- **Full pipeline re-run done (2026-06-25).** All six recordings were
+  re-converted from `.cine` and reprocessed end-to-end on the apex-gap
+  calibration, with Mode A/B anchored on the calibrated gap and flash-cleaned.
+  The earlier-pass results (and the linear rescale that preceded this) are
+  superseded; current outputs are a single consistent pass.
 - **Tier-B threshold sweep not run.** `bright_thresh` stability was argued from
   the arc/plume QA, not a re-detection sweep across `{130…190}`.
 - **Mach > 0.3 at the small-nozzle corner.** Re is incompressible-equivalent;
