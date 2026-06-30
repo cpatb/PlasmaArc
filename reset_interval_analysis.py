@@ -50,7 +50,7 @@ import figstyle
 import plot_config
 
 DATA_ROOT_DEFAULT = Path(r"C:\Users\compl\Desktop\Plasma Arc\J Electrode")
-RESET_GAP_SWEEP = (250, 500, 1000)
+RESET_GAP_SWEEP = (500, 600, 700, 800, 900, 1000)
 DEFAULT_RECORDING = "HS_1.2mm_1500mL_(CO2)"   # the largest recording
 
 # import the recording registry (Re/d_mm) without forcing a heavy import chain
@@ -76,11 +76,12 @@ def clopper_pearson(k: int, n: int, alpha: float = 0.05) -> "tuple[float, float]
     return float(lo), float(hi)
 
 
-def analyse(stem: str, data_root: Path, reset_gap: int) -> dict:
+def analyse(stem: str, data_root: Path, reset_gap: int, source: str = "npoint") -> dict:
     rd = data_root / f"{stem}_results"
     meas = pd.read_csv(rd / "measurements_all_events.csv",
                        usecols=["frame", "arc_detected", "is_flash"])
-    rs = pd.read_csv(rd / "re_strikes_qa.csv")
+    fn = "npoint_restrikes.csv" if source == "npoint" else "re_strikes_qa.csv"
+    rs = pd.read_csv(rd / fn)
     rs = rs[rs["mode"].isin(["A", "B"])].copy()
     fps = load_fps(rd)
 
@@ -262,7 +263,9 @@ def main():
     ap.add_argument("--data-root", default=str(DATA_ROOT_DEFAULT))
     ap.add_argument("--reset-gap", type=int, default=arc_resets.DEFAULT_RESET_GAP,
                     help="headline reset_gap (frames) for the figure; the report "
-                         "always sweeps {250,500,1000}")
+                         "sweeps 500..1000 by 100")
+    ap.add_argument("--source", choices=["npoint", "tip"], default="npoint",
+                    help="detector for the post-reset mode (npoint = 10-segment, PRIMARY)")
     args = ap.parse_args()
     data_root = Path(args.data_root)
     stems = list(RECORDINGS.keys()) if args.all else [args.recording]
@@ -272,7 +275,7 @@ def main():
         print(f">>> {stem}")
         by_gap = {}
         for g in sorted(set(RESET_GAP_SWEEP) | {args.reset_gap}):
-            res = analyse(stem, data_root, reset_gap=g)
+            res = analyse(stem, data_root, reset_gap=g, source=args.source)
             by_gap[g] = res
             print(f"    gap={g:>4}: n_resets={res['n_resets']:>4}  "
                   f"post-reset p_A={res['p_post_A']:.3f} "

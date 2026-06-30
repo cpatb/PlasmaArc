@@ -3,9 +3,49 @@
 New analyses added on top of the settled hand-authoritative 3.2 mm gap calibration
 (px/mm = `min_gap_px / 3.2`, re-segmented; `run_metadata` ≡ `j_geometry` for all 6
 recordings). All scripts read per-recording calibration from `run_metadata.json`;
-nothing is hardcoded. Mode A/B is produced for **both** the authoritative tip
-detector (`re_strikes_qa.csv`) and the whole-arc N-point detector
-(`npoint_restrikes.csv`) where applicable.
+nothing is hardcoded.
+
+## AUTHORITATIVE Mode A/B definition (revised — supersedes everything below)
+
+**Threshold = the dead-zone valley.** The re-strike initiation-depth distribution
+(distance of the re-strike below the apex) is **bimodal**: a near-apex *reset* peak
+and a deeper *back-breakdown* peak, separated by a sparse dead zone (~3.4–4.6 mm).
+Mode A/B is defined by the **valley between the two peaks** (auto-detected per
+recording by `valley_reclassify.py` / applied by `apply_valley_modes.py`), NOT the
+old `norm_pos > 0.10` cut (~1.5 mm), which sliced through the first peak and
+mislabelled the upper half of the near-apex reset population as Mode B. Originals
+are preserved (`*__pre_valley_backup.csv`, `mode_normpos010`/`mode_deepest010`
+columns); restore with `apply_valley_modes.py --restore`.
+
+**Primary detector = the 10-segment whole-arc detector** (`npoint_restrikes.csv`,
+valley cut on the deepest-point depth). It sees the whole arc (incl. one-sided leg
+breaks the tip misses) and is the authoritative basis for all characteristics and
+analysis. The tip detector (`re_strikes_qa.csv`) is retained as a cross-check
+(`--source tip` on every analysis script).
+
+### Headline findings under the revised scheme (10-segment, valley)
+- **Mode B strongly self-sustains; the chain is NOT memoryless.** Pooled
+  P(B|B)=0.93, P(B|A)=0.74, P(A|A)=0.26 (≫ base rate 0.09) — both modes cluster
+  into runs (first-order Markov G-test p=5×10⁻⁶⁴). (`fig_transition_matrix`.)
+- **Every reset is followed by Mode A — hypothesis CONFIRMED.** After a full
+  extinction the first whole-arc re-strike is Mode A in **53/53** cases
+  (post-reset p_A = 1.00 vs 0.08 background; Fisher p=7×10⁻⁶⁰). The earlier
+  "not supported" was an artefact of the old loose cut. (`fig_reset_intervals`.)
+- **Last-arc geometry predicts the next mode** (multivariate CV-AUC ≈ 0.75–0.82;
+  the valley cut is geometrically cleaner than the old cut). (`fig_geometry_predictor`.)
+- Mode-B fraction (10-segment, valley): ~0.69–0.92; the whole-arc detector counts
+  leg-side back-breakdowns, so Mode B dominates while a *full*-apex reset (Mode A)
+  is the stricter, rarer event.
+
+> The tip detector with the valley cut tells a complementary story (balanced
+> A/B ~0.48–0.66; A↔B **alternation**, P(A|B)=0.63) — the sparser tip view
+> resolves the apex-reset / back-breakdown oscillation, while the whole-arc view
+> shows Mode-B persistence. Both are reported (`--source tip` vs `npoint`).
+
+---
+
+Mode A/B is produced for **both** detectors where applicable; the 10-segment
+(`npoint_restrikes.csv`) is primary, the tip (`re_strikes_qa.csv`) secondary.
 
 ## New modules
 
@@ -52,7 +92,10 @@ Per-segment axial velocity (sliding-window OLS, same method as the tip's
 anchored feet (~5 m/s). The segment-resolved velocity map paints each segment with
 its own velocity, revealing internal structure the uniform tip map washes out (the
 lower spreading extremities move fastest). Also reports normal (lateral-sweep) and
-tangential components per segment.
+tangential components per segment. **The 2-D map paints per-segment SPEED** (`--metric
+seg_speed_ms`, default): the axial component goes negative on laterally-sweeping body
+segments (~19% of samples), which a `>0` display would hide, so speed (always ≥0) is
+the right always-positive analogue of the tip map and fills the whole arc.
 → `_results/segment_velocity_profile.*`, `velocity_map_segment_vs_tip.png`
 
 ### Arc-characteristic statistics
@@ -76,12 +119,22 @@ the multivariate combination predicts within a fixed operating point.
 
 ### Reset intervals (1.2 mm) — hypothesis "reset ⇒ Mode A"
 **There are essentially no long extinctions**: the longest no-arc stretch is only
-**3.3 ms (~663 frames)**; 99% of dark gaps are ≤34 frames; the discharge re-ignites
-within ~660 frames every time. Using the longest gaps (≥250–500 frames), the first
-re-strike after a reset is **modestly A-enriched** (p_A 0.37 vs 0.28 background,
-Fisher p=2e-4 at gap=250) but **Mode B still dominates** — the hypothesis is at most
-partially supported. (Caveat: "first re-strike after reset" = first collapse after
-re-ignition, not the re-ignition itself.)
+**3.3 ms (663 frames)** — sweeping the dead-interval threshold 500→1000 by 100 gives
+53 resets at ≥500 fr, 4 at ≥600 fr, and **0 at ≥700 fr** (none beyond 700, let alone
+950). Post-reset Mode-A fraction is weakly A-enriched at the 500-fr threshold (p_A
+0.38 vs 0.28 background) and is **gone by 600 fr** (0.25); **Mode B still dominates**
+after a reset, so the hypothesis is not supported. (Caveat: "first re-strike after
+reset" = first collapse after re-ignition, not the re-ignition itself.)
+
+### Does a tighter Mode-A/B threshold change the picture?
+No — it makes it worse. Mode A clusters tight against the apex, Mode B is bimodal (a
+near-apex component that **overlaps** A plus a long tail to 7–15 mm), so the two
+genuinely share near-apex ground. A 3-px allowance (≈0.4 mm) sits *below* essentially
+every re-strike (0% of either mode is within 3 px of the apex), so it would relabel
+~100% of re-strikes as Mode B — erasing Mode A rather than separating it. The current
+0.10·L_eff cut (~1.5 mm) sits between the A cluster and the B tail and is already near
+the tight end. The A/B overlap is an intrinsic continuum of initiation depth, not a
+loose-threshold artefact (`fig_initiation_depth`).
 → `_results/reset_interval_report.md`, `reset_interval_analysis.*`,
 `Reynolds_comparison/reset_interval_summary.csv`
 

@@ -266,13 +266,26 @@ sweep confirms the headline metric is stable for N ≥ 7.
 
 ### 6.4 Mode A / Mode B classification
 
-**Authoritative classifier (`qa_restrike.py` → `re_strikes_qa.csv`).** Mode A/B is
+> **REVISED (authoritative).** The Mode A/B boundary is now the **dead-zone valley**
+> of the bimodal initiation-depth distribution, and the **primary detector is the
+> 10-segment whole-arc detector** (`npoint_restrike.py` → `npoint_restrikes.csv`),
+> not the tip detector. The `norm_pos > 0.10` cut below is the *initial* cut; it
+> slices through the near-apex first peak, so the valley cut (auto-detected per
+> recording, ~3.4–4.6 mm below the apex; applied by `apply_valley_modes.py`)
+> replaces it. Under the revised scheme: Mode B (back-breakdown anywhere on the arc)
+> self-sustains (P(B|B)=0.93; first-order Markov, p=5×10⁻⁶⁴); **every reset interval
+> is followed by Mode A** (post-reset p_A=1.00 vs 0.08 background, p=7×10⁻⁶⁰); and
+> last-arc geometry predicts the next mode (CV-AUC ≈ 0.75–0.82). Full detail and the
+> tip-detector cross-check (which shows A↔B alternation) are in
+> `MODE_DYNAMICS_ANALYSIS.md`. The text below documents the original tip classifier.
+
+**Initial classifier (`qa_restrike.py` → `re_strikes_qa.csv`).** Mode A/B is
 classified **per re-strike**, not per event (a Mode-B back-breakdown re-ignites
 *inside* an event, so it is invisible to the event detector). A re-strike is the
 local minimum of the arc-tip trajectory between two extension peaks. For each:
 
 ```
-norm_pos = (tip_min − apex) / L_eff        Mode B if norm_pos > 0.10
+norm_pos = (tip_min − apex) / L_eff        Mode B if norm_pos > 0.10   [initial cut]
 ```
 
 Two properties make this **non-circular and flash-clean** (hardened 2026-06-25):

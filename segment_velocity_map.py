@@ -187,7 +187,10 @@ def main():
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--data-root", default=str(DATA_ROOT_DEFAULT))
     ap.add_argument("--n", type=int, default=N_HEADLINE)
-    ap.add_argument("--metric", choices=["seg_vy_ms", "seg_speed_ms"], default="seg_vy_ms")
+    ap.add_argument("--metric", choices=["seg_vy_ms", "seg_speed_ms"], default="seg_speed_ms",
+                    help="seg_speed_ms (default): 2-D speed magnitude, always >=0 so the "
+                         "whole arc is painted (the axial seg_vy goes negative on laterally "
+                         "sweeping/retreating body segments, which the >0 map mask hides).")
     args = ap.parse_args()
     data_root = Path(args.data_root)
     stems = list(RECORDINGS.keys()) if (args.all or not args.recording) else [args.recording]

@@ -78,7 +78,9 @@ def valid_frames_with_mode(rd: Path, pxmm: float) -> pd.DataFrame:
     df["area_mm2"] = df["area_px"] / (pxmm ** 2)
     df = df.sort_values("frame").reset_index(drop=True)
 
-    rs = pd.read_csv(rd / "re_strikes_qa.csv")
+    # cycle-mode labels from the PRIMARY 10-segment detector (valley Mode A/B)
+    _rsfn = "npoint_restrikes.csv" if (rd / "npoint_restrikes.csv").exists() else "re_strikes_qa.csv"
+    rs = pd.read_csv(rd / _rsfn)
     rs = rs[rs["mode"].isin(["A", "B"])][["frame", "mode"]].copy()
     rs["frame"] = pd.to_numeric(rs["frame"], errors="coerce")
     rs = rs.dropna(subset=["frame"]).sort_values("frame")

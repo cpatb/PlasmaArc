@@ -67,12 +67,14 @@ GROUPS = {
 # --------------------------------------------------------------------------- #
 # discovery
 # --------------------------------------------------------------------------- #
-def find_recordings(data_root):
-    """Return list of (label, group, csv_path) for every usable recording."""
+def find_recordings(data_root, fname="re_strikes_qa.csv"):
+    """Return list of (label, group, csv_path) for every usable recording.
+    fname selects the detector: re_strikes_qa.csv (tip) or npoint_restrikes.csv
+    (10-segment whole-arc, the primary/more-trustworthy detector)."""
     out = []
     for sub, group in GROUPS.items():
         root = os.path.join(data_root, sub)
-        for csv in glob.glob(os.path.join(root, "**", "re_strikes_qa.csv"),
+        for csv in glob.glob(os.path.join(root, "**", fname),
                              recursive=True):
             if "ARCHIVE" in csv or "reference_5000" in csv:
                 continue
@@ -372,17 +374,19 @@ def fig_temporal(temporal, out_png):
     plt.close(fig)
 
 
-def write_report(summary, out_dir):
+def write_report(summary, out_dir, source="npoint", sfx="_npoint"):
     """Plain-language interpretation answering: the A/B conditional probabilities,
     how Mode B sustains itself (P(B|B) and excess persistence), how many cycles it
     loops onto itself (mean Mode-B run length), and whether the chain is memoryless."""
     j = summary[summary["group"].astype(str).str.contains("J-electrode")].copy()
     L = []
-    L.append("# Mode A/B transition (Markov) analysis — J-electrode CO2\n")
-    L.append("Conditional probabilities of the next re-strike mode given the current "
-             "one, on the authoritative tip Mode A/B (`re_strikes_qa.csv`). A "
-             "transition is counted only between two re-strikes not separated by a "
-             "reset interval (full extinction >= reset_gap frames; see arc_resets.py).\n")
+    det = ("10-segment whole-arc detector (`npoint_restrikes.csv`)" if source == "npoint"
+           else "tip detector (`re_strikes_qa.csv`)")
+    L.append(f"# Mode A/B transition (Markov) analysis — J-electrode CO2  [{source}]\n")
+    L.append(f"Conditional probabilities of the next re-strike mode given the current "
+             f"one, on the {det} with the dead-zone valley Mode A/B cut. A transition "
+             f"is counted only between two re-strikes not separated by a reset interval "
+             f"(full extinction >= reset_gap frames; see arc_resets.py).\n")
     L.append("## Per-recording\n")
     L.append("| recording | n | p_B | P(A\\|A) | P(B\\|A) | P(A\\|B) | P(B\\|B) | "
              "mean B run (obs / iid) | memoryless? (G-test p) |")
@@ -413,17 +417,19 @@ def write_report(summary, out_dir):
                  f"({'no detectable memory — next mode ≈ biased coin' if (pd.notna(p['g_p']) and p['g_p']>0.05) else 'significant memory'})")
     L.append("\n## How Mode B sustains itself\n")
     L.append("- **Self-loop probability P(B|B)** is the chance the next re-strike is "
-             "again Mode B. Across the CO2 recordings it is high (0.53–0.94), so once "
-             "in back-breakdown the discharge tends to stay there.")
+             "again Mode B (see the per-recording column above). When P(B|B) exceeds the "
+             "marginal Mode-B rate the discharge tends to stay in back-breakdown; when it "
+             "falls below, the modes ALTERNATE (a deep back-breakdown is followed by an "
+             "apex reset).")
     L.append("- **Mean Mode-B run length** (`meanrun_B_obs`) is how many consecutive "
              "Mode-B re-strikes occur on average — i.e. how many cycles Mode B loops "
-             "onto itself before an A reset. It ranges ~2 to ~13 cycles.")
+             "onto itself before an A reset (per-recording column above).")
     L.append("- Comparing observed vs i.i.d. expected run length "
              "(`meanrun_B_iid = 1/(1-p_B)`): where they are close, B's persistence is "
              "explained by the high marginal p_B alone (memoryless); a large positive "
              "gap would indicate genuine clustering/memory. The G-test column flags "
              "which recordings (if any) have memory beyond the marginal.")
-    out = os.path.join(out_dir, "mode_transition_report.md")
+    out = os.path.join(out_dir, f"mode_transition_report{sfx}.md")
     with open(out, "w", encoding="utf-8") as f:
         f.write("\n".join(L) + "\n")
     return out
@@ -437,15 +443,19 @@ def main():
     ap.add_argument("--reset-gap", type=int, default=arc_resets.DEFAULT_RESET_GAP,
                     help="min no-arc run (frames) that breaks a transition across "
                          "a full extinction (default 500 = event_velocity.MAX_FRAME_GAP)")
+    ap.add_argument("--source", choices=["npoint", "tip"], default="npoint",
+                    help="detector: npoint (10-segment whole-arc, PRIMARY) or tip")
     args = ap.parse_args()
 
+    fname = "npoint_restrikes.csv" if args.source == "npoint" else "re_strikes_qa.csv"
+    sfx = f"_{args.source}"
     out_dir = args.out or os.path.join(args.data_root, "analysis",
                                        "mode_transitions")
     os.makedirs(out_dir, exist_ok=True)
 
-    recs = find_recordings(args.data_root)
+    recs = find_recordings(args.data_root, fname)
     if not recs:
-        raise SystemExit("No re_strikes_qa.csv found under " + args.data_root)
+        raise SystemExit(f"No {fname} found under " + args.data_root)
 
     rows, per_rec_mats, temporal, rawCs = [], [], [], []
     for label, group, csv in recs:
@@ -483,12 +493,12 @@ def main():
         if c not in summary.columns:
             summary[c] = np.nan
     summary = summary[cols]
-    csv_out = os.path.join(out_dir, "mode_transition_summary.csv")
+    csv_out = os.path.join(out_dir, f"mode_transition_summary{sfx}.csv")
     summary.to_csv(csv_out, index=False)
 
-    fig_matrices(per_rec_mats, os.path.join(out_dir, "transition_matrices.png"))
-    fig_temporal(temporal, os.path.join(out_dir, "temporal_modeB_fraction.png"))
-    write_report(summary, out_dir)
+    fig_matrices(per_rec_mats, os.path.join(out_dir, f"transition_matrices{sfx}.png"))
+    fig_temporal(temporal, os.path.join(out_dir, f"temporal_modeB_fraction{sfx}.png"))
+    write_report(summary, out_dir, source=args.source, sfx=sfx)
 
     print("\nWrote:")
     for f in ["mode_transition_summary.csv", "transition_matrices.png",

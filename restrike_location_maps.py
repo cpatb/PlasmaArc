@@ -106,6 +106,10 @@ def make_maps(stem: str, data_root: Path, source: str, n: int = N_HEADLINE):
         return
     rA, cA = rows[modes == "A"], cols[modes == "A"]
     rB, cB = rows[modes == "B"], cols[modes == "B"]
+    # export raw initiation coords so the paper-figure script (which cannot import
+    # repo modules from the data dir) can rebuild the per-Re density montage.
+    pd.DataFrame(dict(row=rows, col=cols, mode=modes)).to_csv(
+        rd / f"restrike_initiation_coords_{source}.csv", index=False)
     HA, rb, cb = hist2d(rA, cA, H, W)
     HB, _, _ = hist2d(rB, cB, H, W)
     ext = [0, W / pxmm, H / pxmm, 0]
