@@ -95,9 +95,10 @@ def valid_geometry(rd: Path, px_per_mm: float) -> pd.DataFrame:
     return df.dropna(subset=["arc_tip_row"]).sort_values("frame").reset_index(drop=True)
 
 
-def restrike_frames(rd: Path, source: str) -> pd.DataFrame:
-    """(frame, mode) per re-strike, sorted by frame."""
-    fn = "re_strikes_qa.csv" if source == "tip" else "npoint_restrikes.csv"
+def restrike_frames(rd: Path, source: str, fname: str | None = None) -> pd.DataFrame:
+    """(frame, mode) per re-strike, sorted by frame. fname overrides the detector
+    file (e.g. an N-tagged npoint_restrikes_N50.csv for the N-segmentation sweep)."""
+    fn = fname or ("re_strikes_qa.csv" if source == "tip" else "npoint_restrikes.csv")
     df = pd.read_csv(rd / fn)
     df = df[df["mode"].isin(["A", "B"])].copy()
     df["frame"] = pd.to_numeric(df["frame"], errors="coerce")
@@ -107,13 +108,14 @@ def restrike_frames(rd: Path, source: str) -> pd.DataFrame:
     return df[["frame", "mode"]]
 
 
-def build_features(stem: str, data_root: Path, source: str, anchor: str = "peak") -> pd.DataFrame:
+def build_features(stem: str, data_root: Path, source: str, anchor: str = "peak",
+                   rs_fname: str | None = None) -> pd.DataFrame:
     """One row per re-strike: next_mode + last-visible-arc geometry features."""
     rd = data_root / f"{stem}_results"
     meta = load_meta(rd)
     pxmm = float(meta["px_per_mm"])
     vg = valid_geometry(rd, pxmm)
-    rs = restrike_frames(rd, source)
+    rs = restrike_frames(rd, source, fname=rs_fname)
     vf = vg["frame"].to_numpy()
     rows = []
     prev = -1

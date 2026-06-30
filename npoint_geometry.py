@@ -64,15 +64,21 @@ def _cache_path(results_dir: Path) -> Path:
 
 
 def reconstruct_points(results_dir: Path, meta: dict, frame_limit: int | None = None,
-                       resume: bool = True, progress: bool = True) -> dict:
+                       resume: bool = True, progress: bool = True,
+                       n_list=None, cache_path=None) -> dict:
     """Reconstruct per-point arc (row, col) for every detected & ~flash frame.
 
     Mirrors ``npoint_restrike.reconstruct_depths`` exactly (same frame set, same
     binarise/skeletonise/order/resample/orient), but stores the full oriented
     ``(row, col)`` per point.  Checkpointed per chunk to ``npoint_xy_cache.npz``.
 
+    n_list / cache_path override the resampling N values and the cache file (used
+    to add a high-N exploration, e.g. N=50, into a SEPARATE cache without touching
+    the committed npoint_xy_cache.npz).
+
     Returns dict(frames, pts={N:(M,N,2)}, n_recon, n_attempted).
     """
+    nlist = list(n_list) if n_list is not None else list(N_LIST)
     p = detector_params(meta)
     gap_row = p["gap_row"]
     tiffs, fpf = tiff_chunks(results_dir)
@@ -86,15 +92,15 @@ def reconstruct_points(results_dir: Path, meta: dict, frame_limit: int | None = 
 
     done_chunks: set = set()
     frames_acc: list = []
-    xy_acc = {N: [] for N in N_LIST}
-    cache = _cache_path(results_dir)
+    xy_acc = {N: [] for N in nlist}
+    cache = Path(cache_path) if cache_path else _cache_path(results_dir)
     if resume and cache.exists():
         try:
             z = np.load(cache, allow_pickle=True)
             if str(z["sig"]) == sig:
                 done_chunks = set(int(c) for c in z["done_chunks"])
                 frames_acc = list(z["frames"].astype(np.int64))
-                for N in N_LIST:
+                for N in nlist:
                     arr = z[f"xy{N}"].astype(np.float32)
                     xy_acc[N] = [arr[i] for i in range(arr.shape[0])]
                 if progress and done_chunks:
@@ -109,7 +115,7 @@ def reconstruct_points(results_dir: Path, meta: dict, frame_limit: int | None = 
                  frames=np.array(frames_acc, dtype=np.int64),
                  **{f"xy{N}": (np.array(xy_acc[N], dtype=np.float32)
                               if xy_acc[N] else np.zeros((0, N, 2), np.float32))
-                    for N in N_LIST})
+                    for N in nlist})
 
     t0 = time.time()
     n_attempted = 0
@@ -143,7 +149,7 @@ def reconstruct_points(results_dir: Path, meta: dict, frame_limit: int | None = 
                     continue
                 rec = {}
                 ok = True
-                for N in N_LIST:
+                for N in nlist:
                     pts = resample_arc(path, N)
                     if pts is None:
                         ok = False
@@ -152,7 +158,7 @@ def reconstruct_points(results_dir: Path, meta: dict, frame_limit: int | None = 
                 if not ok:
                     continue
                 frames_acc.append(int(f))
-                for N in N_LIST:
+                for N in nlist:
                     xy_acc[N].append(rec[N])
         done_chunks.add(int(c))
         _save_ckpt()
@@ -166,20 +172,24 @@ def reconstruct_points(results_dir: Path, meta: dict, frame_limit: int | None = 
     frames = frames[order]
     pts = {N: (np.array(xy_acc[N], dtype=np.float32)[order]
                if len(xy_acc[N]) else np.zeros((0, N, 2), np.float32))
-           for N in N_LIST}
+           for N in nlist}
     return dict(frames=frames, pts=pts, n_recon=len(frames), n_attempted=n_attempted)
 
 
 def points_for(results_dir: Path, N: int = N_HEADLINE, meta: dict | None = None,
-               resume: bool = True, progress: bool = False):
+               resume: bool = True, progress: bool = False, cache_path=None):
     """Load-or-build the xy cache and return (frames, pts(M,N,2)) for one N.
 
     The deepest-point DEPTH (axial) for that N is ``pts[:, :, 0] - gap_row``.
+    cache_path selects a non-default cache (e.g. npoint_xy_cache_N50.npz for the
+    high-N exploration); when given, only N is reconstructed/loaded from it.
     """
     results_dir = Path(results_dir)
     if meta is None:
         meta = load_metadata(results_dir)
-    recon = reconstruct_points(results_dir, meta, resume=resume, progress=progress)
+    nlist = [N] if cache_path is not None else None
+    recon = reconstruct_points(results_dir, meta, resume=resume, progress=progress,
+                               n_list=nlist, cache_path=cache_path)
     return recon["frames"], recon["pts"][N]
 
 
@@ -251,25 +261,34 @@ def main():
     ap.add_argument("--data-root", default=str(DATA_ROOT_DEFAULT))
     ap.add_argument("--no-resume", action="store_true",
                     help="ignore the xy checkpoint and start fresh")
+    ap.add_argument("--n", default=None,
+                    help="comma-separated N values to reconstruct (default 10,15,20). "
+                         "Use e.g. --n 50 with --cache-suffix _N50 for a high-N pass "
+                         "that does not touch the committed npoint_xy_cache.npz.")
+    ap.add_argument("--cache-suffix", default="",
+                    help="suffix on the cache filename (e.g. _N50 -> npoint_xy_cache_N50.npz)")
     args = ap.parse_args()
 
     data_root = Path(args.data_root)
     stems = _resolve_stems(args)
     resume = not args.no_resume
+    nlist = [int(x) for x in args.n.split(",")] if args.n else None
 
     if args.command == "build":
         print("=" * 78)
-        print(f"BUILD npoint_xy_cache  on {len(stems)} recording(s)")
+        print(f"BUILD npoint_xy_cache{args.cache_suffix}  on {len(stems)} recording(s)"
+              f"  N={nlist or list(N_LIST)}")
         print("=" * 78)
         for stem in stems:
             rd = data_root / f"{stem}_results"
             meta = load_metadata(rd)
             p = detector_params(meta)
+            cpath = rd / f"npoint_xy_cache{args.cache_suffix}.npz"
             print(f"\n>>> {stem}  bright={p['bright_thresh']} gap_row={p['gap_row']} "
                   f"px/mm={p['px_per_mm']:.3f}")
-            recon = reconstruct_points(rd, meta, resume=resume)
-            print(f"    done: {recon['n_recon']} frames reconstructed -> "
-                  f"{_cache_path(rd).name}")
+            recon = reconstruct_points(rd, meta, resume=resume, n_list=nlist,
+                                       cache_path=cpath)
+            print(f"    done: {recon['n_recon']} frames reconstructed -> {cpath.name}")
 
     elif args.command == "validate":
         print("=" * 78)

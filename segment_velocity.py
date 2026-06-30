@@ -76,13 +76,13 @@ def load_meta(rd: Path) -> dict:
 
 
 def compute(stem: str, data_root: Path, n: int = N_HEADLINE,
-            window: int = LOCAL_VEL_N) -> "tuple[pd.DataFrame, dict]":
+            window: int = LOCAL_VEL_N, cache_path=None) -> "tuple[pd.DataFrame, dict]":
     rd = data_root / f"{stem}_results"
     meta = load_meta(rd)
     fps = float(meta["fps"])
     pxmm = float(meta["px_per_mm"])
 
-    frames, pts = points_for(rd, N=n)          # frames (M,), pts (M,n,2) row,col
+    frames, pts = points_for(rd, N=n, cache_path=cache_path)   # frames (M,), pts (M,n,2)
     if len(frames) == 0:
         return pd.DataFrame(), dict(stem=stem, n_rows=0)
 

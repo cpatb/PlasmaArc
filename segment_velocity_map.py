@@ -58,13 +58,16 @@ DATA_ROOT_DEFAULT = Path(r"C:\Users\compl\Desktop\Plasma Arc\J Electrode")
 
 
 def build_map(stem: str, data_root: Path, n: int = N_HEADLINE,
-              metric: str = "seg_vy_ms") -> dict:
+              metric: str = "seg_speed_ms", cache_path=None,
+              sv_csv: str = "segment_velocities.csv",
+              out_npy: str = "velocity_map_segment.npy") -> dict:
     rd = data_root / f"{stem}_results"
     meta = load_metadata(rd)
     p = detector_params(meta)
     pxmm = p["px_per_mm"]
+    res_out_npy = out_npy
 
-    sv = pd.read_csv(rd / "segment_velocities.csv")
+    sv = pd.read_csv(rd / sv_csv)
     sv = sv[["frame", "seg_idx", metric]].copy()
     # per frame -> array of N segment velocities (index by seg_idx)
     vel_by_frame = {}
@@ -73,7 +76,7 @@ def build_map(stem: str, data_root: Path, n: int = N_HEADLINE,
         arr[g["seg_idx"].to_numpy()] = g[metric].to_numpy()
         vel_by_frame[int(f)] = arr
 
-    frames_xy, pts_xy = points_for(rd, N=n)         # (M,), (M,n,2)
+    frames_xy, pts_xy = points_for(rd, N=n, cache_path=cache_path)   # (M,), (M,n,2)
     pt_index = {int(f): i for i, f in enumerate(frames_xy)}
 
     tiffs, fpf = tiff_chunks(rd)
@@ -125,7 +128,7 @@ def build_map(stem: str, data_root: Path, n: int = N_HEADLINE,
     vmap = np.full((H, W), np.nan)
     m = vel_cnt > 0
     vmap[m] = vel_sum[m] / vel_cnt[m]
-    np.save(rd / "velocity_map_segment.npy", vmap * 1000.0)    # mm/s, pipeline convention
+    np.save(rd / res_out_npy, vmap * 1000.0)    # mm/s, pipeline convention
     return dict(stem=stem, painted=painted, vmap=vmap, px_per_mm=pxmm,
                 n_pixels=int(m.sum()), metric=metric)
 
