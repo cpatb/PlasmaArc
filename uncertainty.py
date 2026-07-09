@@ -30,11 +30,12 @@ DEFAULT BUDGET (justified in METHODS.md and ROBUSTNESS_REPORT.md)
 
   SIGMA_FPS_REL  = 1e-3   (0.1%)  — Phantom HS crystal oscillator is ~50-100 ppm;
                                    0.1% is conservative for trig-mode recordings.
-  SIGMA_PXMM_REL = 0.05   (5%)    — calibration gap is ~22-30 px wide for a 2.4 mm
+  SIGMA_PXMM_REL = 0.05   (5%)    — calibration gap is ~21-30 px wide for the 3.2 mm
                                    apex gap, with two clicks at ~1 px sub-pixel
-                                   localization each: sqrt(2) px / 26.56 px ≈ 5.3%.
+                                   localization each: sqrt(2) px / ~21-30 px ≈ 4.7-6.7%.
                                    Hand-segmented J-hook calibrations may exceed
-                                   this slightly; override with --pxmm-rel-err.
+                                   this slightly; override with --pxmm-rel-err (or use
+                                   pxmm_uncertainty_from_calibration(min_gap_px)).
 
 These are RELATIVE 1-sigma uncertainties. Override per-recording by passing the
 matching CLI flags to ``run_j_co2.py`` / ``event_velocity.py`` / ``fourier_analysis.py``
@@ -106,8 +107,8 @@ def pxmm_uncertainty_from_calibration(min_gap_px,
 
         sigma_pxmm / pxmm = sqrt(2) * c / g_px
 
-    Returns a float (relative 1-sigma).  The 2.4 mm reference gap itself is
-    treated as exact (the J electrodes are machined to 2.4 mm).
+    Returns a float (relative 1-sigma).  The 3.2 mm reference gap itself is
+    treated as exact (the J electrodes are machined to 3.2 mm).
     """
     if min_gap_px is None or not np.isfinite(min_gap_px) or min_gap_px <= 0:
         return SIGMA_PXMM_REL

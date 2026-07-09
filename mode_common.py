@@ -64,7 +64,7 @@ def analyze_recording(csv_path, direction, px_per_mm=8.8, fps=FPS_DEFAULT,
         frames = g['frame'].values.astype(float)
         tip = g['arc_tip_row'].values.astype(float)
         comp = (g['arc_complete'].values == 1) if 'arc_complete' in g.columns else None
-        erow, leff = apex_and_range(tip, comp)
+        erow, leff, _src = apex_and_range(tip, comp)
         rk, peaks, _ = detect_restrikes(tip, erow, leff, ext_prom_frac, min_cycle, smooth)
         peaks = np.asarray(peaks)
         ks = [r['idx'] for r in rk]

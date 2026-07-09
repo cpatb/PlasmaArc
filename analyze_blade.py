@@ -632,9 +632,17 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
     if not skel.any(): return m
     coords = ordered_skeleton_coords(skel)
     if keep_overlays: m['_skel_coords'] = coords
-    m['arc_length_px'] = len(coords)
-    if px_per_mm: m['arc_length_mm'] = len(coords)/px_per_mm
-    # Euclidean path length (diagonal-aware), unlike arc_length_px = pixel count.
+    # Arc length = TOTAL skeleton pixel count (all branches).  Previously this was
+    # len(ordered_skeleton_coords), which follows only ONE branch and so grossly
+    # under-measures FORKED arcs — that collapsed length blew up the flash
+    # eff_width = area/arc_length_px metric and silently dropped ~5-14% of real
+    # deep forked arcs as "flash" (see QA report / METHODS §6.6).  skel.sum() is
+    # branch-complete and robust: a genuine saturation blob still has a short
+    # medial axis (high eff_width → flagged), while a forked thin arc keeps its
+    # full length (low eff_width → kept).
+    m['arc_length_px'] = int(skel.sum())
+    if px_per_mm: m['arc_length_mm'] = m['arc_length_px']/px_per_mm
+    # Euclidean path length (diagonal-aware), single-branch (ordered coords).
     m['path_len_px'] = _polyline_length(coords)
     if len(coords) >= 3:
         d = np.diff(coords, axis=0)

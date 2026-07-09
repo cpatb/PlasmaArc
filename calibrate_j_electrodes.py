@@ -13,7 +13,7 @@ extrapolated line is the electrode everywhere it matters.
 The J-electrode reactor is different (cf. METHODS.md §1):
 
     * two razor blades in an inverted V (∧), ~15 deg included angle,
-    * a small **minimum gap** at the apex (~2.4 mm), and
+    * a small **minimum gap** at the apex (3.2 mm), and
     * blades of **finite length** — each has a physical TIP near the apex and a
       FAR end where it leaves the field of view / mount.
 
@@ -26,7 +26,7 @@ not capture, and that the user flagged explicitly:
      finite SEGMENT (tip-end → far-end) and, in analyze_blade.py with
      --finite-segments, require the arc foot to project ONTO that segment.
 
-  2. **Minimum gap distance** — the apex gap (default 2.4 mm).  Clicking the two
+  2. **Minimum gap distance** — the apex gap (default 3.2 mm).  Clicking the two
      blade TIP-ends gives the gap directly: their pixel separation is the
      minimum gap in px, which (with the known mm value) yields px/mm, and their
      mean row yields the electrode-gap cutoff row used for flash rejection
@@ -60,14 +60,14 @@ USAGE
 
     # specific frame, custom outputs, known gap value
     python calibrate_j_electrodes.py --tiff CHUNK.tiff --frame 1200 \
-        --gap-mm 2.4 --arc-direction down \
+        --gap-mm 3.2 --arc-direction down \
         --out  "<...>_results/blade_lines.npy" \
         --geom-out "<...>_results/j_geometry.json"
 
     # headless / scripted (no display): pass the 4 points as row,col pairs,
     # tip-end first per blade:  Atip ; Afar ; Btip ; Bfar
     python calibrate_j_electrodes.py --tiff CHUNK.tiff \
-        --points "30,150 ; 90,120 ; 32,172 ; 92,205" --gap-mm 2.4
+        --points "30,150 ; 90,120 ; 32,172 ; 92,205" --gap-mm 3.2
 """
 
 import argparse
@@ -78,7 +78,8 @@ import numpy as np
 import tifffile
 
 DARK_GUARD = 35
-DEFAULT_GAP_MM = 2.4          # METHODS.md §1 minimum electrode gap
+DEFAULT_GAP_MM = 3.2          # confirmed true minimum electrode gap
+                             # (hand_calibration_authoritative_25JUN26; was 2.4)
 DEFAULT_SEG_MARGIN_PX = 6     # how far past a clicked end a foot may still attach
 _BLADE_COLORS = ['#00FFFF', '#FF8800']   # cyan = A, orange = B
 _BLADE_LABELS = ['Blade A', 'Blade B']

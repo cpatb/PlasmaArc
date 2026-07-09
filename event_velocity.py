@@ -80,8 +80,15 @@ SUBEVENT_RETREAT_FRAC = 0.50
 # enough to bridge genuine inter-frame dropouts without merging events.
 MAX_FRAME_GAP = 500   # frames (~2.5 ms at 200 kfps)
 
-# Minimum advancing-front frames required to fit an event.
+# Minimum frames in the propagation window required to fit an event.
 MIN_EVENT_FRAMES = 5
+
+# Minimum tip ADVANCE (px) over the propagation window for the velocity to be
+# trustworthy.  Very short lever-arm events (~5 frames / ~20 px) otherwise produce
+# the extreme fast-tail velocities (pooled median 13.6 m/s for 5-frame vs 5.0 m/s
+# for 50+-frame events).  An event whose tip never advances at least this far is
+# fit but flagged short_baseline=1 so downstream stats can gate/length-weight it.
+MIN_EVENT_EXTENSION_PX = 15
 
 # Sliding-window width (in advancing-front neighbors) for local OLS velocity.
 # Centered on each advancing-front frame; 5 -> +/-2 neighbors each side.
@@ -159,7 +166,13 @@ def assign_events(df):
     eid = 0
     electrode_info = {}
 
-    for fname, fgrp in df[df['arc_detected'] == 1].groupby('file'):
+    # Segment on the SAME frames the fit uses: detected AND not-flash.  Previously
+    # segmentation ran on all detected frames, so flash frames set the running-max,
+    # triggered sub-events, and shifted the electrode-row / p90 / nucleation
+    # estimates BEFORE being dropped at fit time — detector and fitter disagreed.
+    seg_mask = ((pd.to_numeric(df['arc_detected'], errors='coerce').fillna(0).astype(int) == 1)
+                & ~arc_filter.flash_mask(df, eff_width=FLASH_EFF_WIDTH, arc_width=FLASH_ARC_WIDTH))
+    for fname, fgrp in df[seg_mask].groupby('file'):
         fgrp   = fgrp.sort_values('frame')
         frames = fgrp['frame'].values.astype(float)
         rows   = fgrp['arc_tip_row'].values.astype(float)
@@ -221,8 +234,8 @@ def assign_events(df):
 def advancing_front(frames, rows):
     """
     Return indices of frames where the arc tip reaches a new maximum row
-    (i.e. genuinely advancing, not retreating).  Used to strip retreats
-    before regression so the slope reflects forward progression only.
+    (i.e. genuinely advancing, not retreating).  Retained for the local-velocity
+    sliding window; NO LONGER used for the event velocity fit (see propagation_fit).
     """
     keep   = []
     runmax = -np.inf
@@ -231,6 +244,51 @@ def advancing_front(frames, rows):
             keep.append(i)
             runmax = r
     return np.array(keep, dtype=int)
+
+
+def propagation_fit(frames, rows):
+    """Robust event velocity over the PROPAGATION phase (start -> peak extension).
+
+    The previous fit ran OLS on the advancing-front ENVELOPE (running-maxima only).
+    That is the classic "regression on record maxima" estimator: the kept series is
+    non-decreasing by construction, so the slope is structurally >= 0 — a stationary
+    noisy arc yields a spurious positive velocity and a single upward noise spike
+    permanently corrupts the envelope (0 of 849 events could ever come out <= 0).
+
+    This estimator instead fits ALL frames from the event start to the frame of
+    peak extension (argmax row) with the robust Theil-Sen slope:
+      * using every frame (not just maxima) removes the record-maxima upward bias;
+      * Theil-Sen is insensitive to the occasional outlier frame (no single spike
+        corrupts it), unlike np.polyfit;
+      * stopping at the peak excludes the extinction retreat, so the slope is the
+        advance rate, not biased low by the arc falling back.
+
+    Returns dict(slope, intercept, r2, n_win, extension_px, slope_se,
+    short_baseline) or None if too few frames.
+    """
+    from scipy.stats import theilslopes
+    frames = np.asarray(frames, float); rows = np.asarray(rows, float)
+    if len(frames) < MIN_EVENT_FRAMES:
+        return None
+    peak = int(np.argmax(rows))
+    win = slice(0, peak + 1) if (peak + 1) >= MIN_EVENT_FRAMES else slice(0, len(rows))
+    f, r = frames[win], rows[win]
+    if len(f) < MIN_EVENT_FRAMES or float(np.ptp(f)) <= 0:
+        return None
+    slope, intercept, lo_s, hi_s = theilslopes(r, f)
+    pred = slope * f + intercept
+    ss_res = float(np.sum((r - pred) ** 2))
+    ss_tot = float(np.sum((r - r.mean()) ** 2))
+    r2 = (1.0 - ss_res / ss_tot) if ss_tot > 0 else np.nan
+    # SE from the 95% Theil-Sen CI half-width (z=1.96): used like the OLS slope SE.
+    slope_se = ((hi_s - lo_s) / (2.0 * 1.959964)
+                if np.isfinite(hi_s) and np.isfinite(lo_s) else np.nan)
+    extension_px = float(rows.max() - rows[0])
+    short_baseline = (len(f) < MIN_EVENT_FRAMES) or (extension_px < MIN_EVENT_EXTENSION_PX)
+    return dict(slope=float(slope), intercept=float(intercept), r2=r2,
+                n_win=int(len(f)), extension_px=extension_px,
+                slope_se=float(slope_se) if np.isfinite(slope_se) else np.nan,
+                short_baseline=bool(short_baseline))
 
 # ---
 # Event regression
@@ -271,34 +329,26 @@ def fit_events(df, electrode_info=None):
 
         frames = fit_g['frame'].values.astype(float)
         rows   = fit_g['arc_tip_row'].values.astype(float)
-        front  = advancing_front(frames, rows)
-
-        if len(front) < MIN_EVENT_FRAMES:
+        pf = propagation_fit(frames, rows)   # robust Theil-Sen over start->peak
+        if pf is None:
             continue
 
-        f_front = frames[front]
-        r_front = rows[front]
-
-        slope, intercept = np.polyfit(f_front, r_front, 1)
-        predicted = slope * f_front + intercept
-        ss_res = np.sum((r_front - predicted) ** 2)
-        ss_tot = np.sum((r_front - r_front.mean()) ** 2)
-        r2     = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+        slope      = pf['slope']
+        r2         = pf['r2']
+        n_pts      = pf['n_win']
+        front_n    = pf['n_win']
+        extension_px   = pf['extension_px']
+        short_baseline = pf['short_baseline']
         vel_ms = slope * FPS / PX_PER_MM / 1000
         # No velocity cap: flashes are rejected at the frame level (arc_filter).
 
-        # 1-sigma statistical uncertainty on the event velocity, from the
-        # standard error of the OLS slope:
-        #   SE(slope) = sqrt( SS_res/(n-2) / Sxx ),  Sxx = sum((f - f_mean)^2)
-        # propagated through the same px/frame -> m/s conversion as vel_ms.
-        # The legacy vel_ms_err column is this statistical-only value, kept
-        # for backwards compatibility. The authoritative error to quote is
+        # 1-sigma statistical uncertainty: from the Theil-Sen 95% slope CI
+        # (propagation_fit), propagated through the same px/frame -> m/s
+        # conversion as vel_ms. The legacy vel_ms_err column is this
+        # statistical-only value; the authoritative error to quote is
         # vel_ms_err_total below (stat + px/mm sys + fps sys in quadrature).
-        n_pts = len(f_front)
-        sxx   = float(np.sum((f_front - f_front.mean()) ** 2))
-        if n_pts > 2 and sxx > 0:
-            slope_se   = float(np.sqrt(ss_res / (n_pts - 2) / sxx))
-            vel_ms_err = slope_se * FPS / PX_PER_MM / 1000
+        if np.isfinite(pf['slope_se']):
+            vel_ms_err = pf['slope_se'] * FPS / PX_PER_MM / 1000
         else:
             vel_ms_err = np.nan
         # Full budget: stat (slope SE) + sys (px/mm calibration + fps).
@@ -324,18 +374,19 @@ def fit_events(df, electrode_info=None):
             'frame_end':       int(grp['frame'].iloc[-1]),
             'duration_frames': int(grp['frame'].iloc[-1] - grp['frame'].iloc[0]),
             'n_frames_total':  len(grp),
-            'n_frames_front':  len(front),
+            'n_frames_front':  int(front_n),
             'used_complete':   int(used_complete),
             'sub_event_count': sub_count,
+            'short_baseline':  int(short_baseline),
             'vel_ms':            round(vel_ms, 4),
             'vel_ms_err':        round(vel_ms_err, 4) if np.isfinite(vel_ms_err) else np.nan,
             'vel_ms_err_stat':   round(vel_ms_err_stat, 4),
             'vel_ms_err_sys':    round(vel_ms_err_sys, 4),
             'vel_ms_err_total':  round(vel_ms_err_total, 4),
             'r2':                round(r2, 4),
-            'tip_row_start':   round(float(r_front[0]), 2),
-            'tip_row_end':     round(float(r_front[-1]), 2),
-            'extension_px':    round(float(r_front.max() - r_front.min()), 2),
+            'tip_row_start':   round(float(rows[0]), 2),
+            'tip_row_end':     round(float(rows[-1]), 2),
+            'extension_px':    round(float(extension_px), 2),
             'electrode_row':   round(ei.get('electrode_row', np.nan), 2),
             'l_eff_px':        round(ei.get('l_eff_px', np.nan), 2),
         })

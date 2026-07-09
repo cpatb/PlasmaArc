@@ -3,7 +3,7 @@ sweep_utils.py — sweep-level recording-exclusion mechanism.
 
 A ``<stem>_results`` directory may carry a ``.excluded_from_sweep`` sentinel
 file. Cross-recording aggregators (reynolds_comparison, mode_ratio_vs_re,
-asymmetry_vs_time, warmup_time, temporal_velocity_profiles when aggregating)
+asymmetry_vs_time, temporal_velocity_profiles when aggregating)
 skip those directories by default. Per-recording diagnostics
 (recompute_uncertainty, verify_fps_threading) still process them, because
 per-recording data is honestly captured and worth keeping visible.

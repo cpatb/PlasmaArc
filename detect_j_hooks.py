@@ -8,7 +8,7 @@ the electrode edges empirically: the arc can only attach to electrode metal, so
 the set of all arc attachment sites (skeleton endpoints / roots), accumulated
 across many frames, traces out the two electrode edges.  The facing hook tips
 are the closest points of the two edge clouds; their separation should match the
-known minimum gap (default 2.4 mm), which is used as a built-in sanity check.
+known minimum gap (default 3.2 mm), which is used as a built-in sanity check.
 
 Writes (into the recording's <stem>_results/ folder):
     electrode_edges.npz   A, B (curved edge point clouds), A_tip, B_tip (hook tips)
@@ -21,7 +21,7 @@ calibrate_j_electrodes.py for the J-hook geometry.
 USAGE
 -----
     python detect_j_hooks.py --results "<...>/HS_0.8mm_1500mL_..._results" \
-        --px-per-mm 8.75 --gap-mm 2.4
+        --px-per-mm 9.375 --gap-mm 3.2
     # high-flow / bright-plume recordings: raise the core seed so the plume does
     # not merge the two hooks, and/or reuse a clean recording's geometry:
     python detect_j_hooks.py --results "<...>_results" --seed 235
@@ -111,7 +111,7 @@ def main():
     ap = argparse.ArgumentParser(description='Detect J-hook electrodes by arc-attachment tracking')
     ap.add_argument('--results', required=True, help='recording <stem>_results/ folder (with tiff/)')
     ap.add_argument('--px-per-mm', type=float, default=8.75)
-    ap.add_argument('--gap-mm', type=float, default=2.4, help='known minimum hook gap (sanity check)')
+    ap.add_argument('--gap-mm', type=float, default=3.2, help='known minimum hook gap (sanity check)')
     ap.add_argument('--arc-direction', choices=['down', 'up'], default='down')
     ap.add_argument('--seed', type=int, default=200,
                     help='DN seed for the arc CORE; raise for bright-plume high-flow runs')

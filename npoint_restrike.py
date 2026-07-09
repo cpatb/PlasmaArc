@@ -49,6 +49,13 @@ extended / back-breakdown), else Mode A (reset to the gap) — the faithful
 generalisation of the tip ``norm_pos`` cut.  Breakpoint position s = i/(N-1)
 (0 = one foot, 1 = the other); tagged ``leg`` if s<0.2 or s>0.8 else ``central``.
 
+NOTE (Mode A/B threshold, revised): the 0.10*L_eff cut here is the INITIAL cut.
+The AUTHORITATIVE boundary is the DEAD-ZONE VALLEY between the two peaks of the
+(bimodal) deepest-depth distribution, applied downstream by ``apply_valley_modes.py``
+(rewrites the ``mode`` column, original backed up to ``npoint_restrikes__pre_valley_backup.csv``
++ ``mode_deepest010``). This 10-segment whole-arc detector is the PRIMARY Mode A/B
+basis for all downstream analysis. See MODE_DYNAMICS_ANALYSIS.md.
+
 USAGE
 -----
     # detect on one recording (resumable; checkpoints reconstruction per chunk)
@@ -295,6 +302,11 @@ def detect_events(frames: np.ndarray, depths_N: np.ndarray) -> dict:
     raw_events = []   # (array_idx k, point_i, strength)
     for i in range(N):
         s = uniform_filter1d(depths_N[:, i].astype(float), size=SMOOTH)
+        # Per-point ADAPTIVE prominence base p90-p5 of THIS point's depth — not the
+        # tip detector's p90-apex.  This is deliberate (each point has its own
+        # excursion scale), but it means the per-point detection sensitivity is not
+        # strictly identical to qa_restrike's; the "same collapse-between-extensions
+        # logic" is structural, the prominence SCALE is per-point. (QA report E4.)
         p5, p90 = np.percentile(s, 5), np.percentile(s, 90)
         prom = max(PROM_FRAC * (p90 - p5), 1e-6)
         peaks, _ = find_peaks(s, prominence=prom, distance=MIN_CYCLE)
@@ -331,6 +343,7 @@ def detect_events(frames: np.ndarray, depths_N: np.ndarray) -> dict:
         cyc = int(f - prev_f) if prev_f is not None else -1
         events.append(dict(frame=f, point_idx=int(i), s=round(s_pos, 4),
                            mode=mode, kind=kind,
+                           is_endpoint=bool(i == 0 or i == N - 1),
                            breakpoint_depth_px=round(float(depths_N[k, i]), 2),
                            deepest_depth_px=round(d_deep, 2),
                            strength_px=round(strength, 2), cycle_frames=cyc))
@@ -386,8 +399,25 @@ def run_recording(stem: str, data_root: Path, n: int = N_HEADLINE,
     cyc = np.array([e["cycle_frames"] for e in events if e["cycle_frames"] > 0], float)
     mean_cycle_ms = float(cyc.mean() / fps * 1e3) if len(cyc) else float("nan")
 
+    # E4 robustness: the leg-share of Mode-B is sensitive to (a) the leg threshold
+    # (s<0.2|s>0.8 sits on the N=10 grid) and (b) the literal skeleton ENDPOINTS
+    # (i=0, i=N-1), which dominate leg counts yet are the noisiest reconstruction
+    # points. Report leg-share with the endpoints EXCLUDED, and a band over the
+    # leg cutoff in [0.15, 0.25], so the headline is not an artefact of either.
+    n_b_end = sum(e["mode"] == "B" and e["is_endpoint"] for e in events)
+    n_b_noend = sum(e["mode"] == "B" and not e["is_endpoint"] for e in events)
+    n_b_leg_noend = sum(e["mode"] == "B" and e["kind"] == "leg" and not e["is_endpoint"]
+                        for e in events)
+    leg_share_excl_end = (n_b_leg_noend / n_b_noend) if n_b_noend else float("nan")
+
+    def _legshare(lo, hi):
+        nbl = sum(e["mode"] == "B" and (e["s"] < lo or e["s"] > hi) for e in events)
+        return (nbl / n_b) if n_b else float("nan")
+    leg_share_band_lo = _legshare(0.15, 0.85)   # looser cutoff -> smaller leg zone
+    leg_share_band_hi = _legshare(0.25, 0.75)   # tighter cutoff -> larger leg zone
+
     if write_csv:
-        cols = ["file", "frame", "mode", "kind", "s", "point_idx",
+        cols = ["file", "frame", "mode", "kind", "s", "point_idx", "is_endpoint",
                 "breakpoint_depth_mm", "deepest_depth_mm", "strength_px",
                 "cycle_frames", "tip_invisible"]
         rows = [dict(file=stem, **{k: e[k] for k in cols if k != "file"}) for e in events]
@@ -399,7 +429,10 @@ def run_recording(stem: str, data_root: Path, n: int = N_HEADLINE,
         file=stem, N=n, n_events=n_ev,
         frac_B=round(n_b / n_ev, 4) if n_ev else float("nan"),
         leg_share_of_B=round(n_b_leg / n_b, 4) if n_b else float("nan"),
-        n_B=n_b, n_B_leg=n_b_leg,
+        leg_share_excl_endpoints=round(leg_share_excl_end, 4),
+        leg_share_band_lo=round(leg_share_band_lo, 4),
+        leg_share_band_hi=round(leg_share_band_hi, 4),
+        n_B=n_b, n_B_leg=n_b_leg, n_B_endpoint=n_b_end,
         mean_cycle_ms=round(mean_cycle_ms, 4),
         Re=info["re"], d_mm=info["d_mm"], q_mLpm=info["q"],
         is_repeat=int(info["is_repeat"]),
@@ -411,7 +444,9 @@ def run_recording(stem: str, data_root: Path, n: int = N_HEADLINE,
 
 
 def write_summary(summaries: list, data_root: Path):
-    cols = ["file", "N", "n_events", "frac_B", "leg_share_of_B", "n_B", "n_B_leg",
+    cols = ["file", "N", "n_events", "frac_B", "leg_share_of_B",
+            "leg_share_excl_endpoints", "leg_share_band_lo", "leg_share_band_hi",
+            "n_B", "n_B_leg", "n_B_endpoint",
             "mean_cycle_ms", "Re", "d_mm", "q_mLpm", "is_repeat", "n_recon", "L_eff_px"]
     df = pd.DataFrame([{k: s[k] for k in cols} for s in summaries], columns=cols)
     df = df.sort_values(["is_repeat", "Re"])
@@ -819,19 +854,37 @@ def make_figures(data_root: Path):
     ax.grid(alpha=0.3)
     save(fig, "npoint_vs_tip_modeB_fraction")
 
-    # 3) leg-break share of Mode-B vs Re (the new physical result)
+    # 3) leg-break share of Mode-B vs Re (the new physical result), with the
+    #    leg-threshold sensitivity BAND as error bars and the endpoints-excluded
+    #    value as a hollow marker (E4: leg-share is sensitive to the leg cutoff and
+    #    to the noisy skeleton endpoints; show both so it isn't read as exact).
     fig, ax = plt.subplots(figsize=(6.5, 4.2))
-    ax.scatter(re, head["leg_share_of_B"], c=cols, s=80)
-    ax.plot(re, head["leg_share_of_B"], color="#999999", lw=0.8, zorder=0)
+    yb = head["leg_share_of_B"].to_numpy()
+    if "leg_share_band_lo" in head and "leg_share_band_hi" in head:
+        blo = head["leg_share_band_lo"].to_numpy()
+        bhi = head["leg_share_band_hi"].to_numpy()
+        lo = np.minimum(blo, bhi)
+        hi = np.maximum(blo, bhi)
+        ax.errorbar(re, yb, yerr=[yb - lo, hi - yb], fmt="none",
+                    ecolor="#999999", elinewidth=1, capsize=4, zorder=1)
+    ax.scatter(re, yb, c=cols, s=80, zorder=2, label="leg-share (s<0.2|>0.8)")
+    if "leg_share_excl_endpoints" in head:
+        ax.scatter(re, head["leg_share_excl_endpoints"], facecolors="none",
+                   edgecolors=cols, s=80, linewidths=1.5, zorder=2,
+                   label="excl. endpoints")
+    ax.plot(re, yb, color="#999999", lw=0.8, zorder=0)
     ax.set_xlabel("Reynolds number")
     ax.set_ylabel("leg-break share of Mode-B")
     ax.set_ylim(0, 1)
     ax.grid(alpha=0.3)
-    # nozzle legend
     from matplotlib.lines import Line2D
     handles = [Line2D([0], [0], marker="o", color="w", markerfacecolor=NOZZLE_COLOR[d],
                       markersize=9, label=f"{d} mm") for d in (0.4, 0.8, 1.2)]
-    ax.legend(handles=handles, frameon=False, title="nozzle")
+    handles += [Line2D([0], [0], marker="o", color="w", markerfacecolor="#555",
+                       markersize=9, label="leg-share"),
+                Line2D([0], [0], marker="o", color="w", markeredgecolor="#555",
+                       markerfacecolor="w", markersize=9, label="excl. endpoints")]
+    ax.legend(handles=handles, frameon=False, fontsize=7, ncol=2)
     save(fig, "npoint_legshare_vs_re")
 
     print(f"Saved comparison figures to: {', '.join(str(d) for d in outdirs)}")

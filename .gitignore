@@ -15,3 +15,6 @@ build/
 *.out
 *.synctex.gz
 *.toc
+
+# Claude Code harness scratch
+.claude/

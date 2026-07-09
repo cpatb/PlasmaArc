@@ -10,7 +10,7 @@ explicitly via an interactive calibration step:
     * electrode ENDS  — each blade is a FINITE segment (tip-end near the apex,
       far-end), captured by calibrate_j_electrodes.py and enforced in
       analyze_blade.py with --finite-segments.
-    * minimum GAP     — the ~2.4 mm apex gap, which sets the px/mm scale, the
+    * minimum GAP     — the 3.2 mm apex gap, which sets the px/mm scale, the
       electrode-gap flash-cutoff row (--gap-row) and the Mode-A/B apex anchor.
 
 The conversion and every downstream stage are the SAME code as run_11may26.py
@@ -25,7 +25,7 @@ PREREQUISITE — run the interactive calibration ONCE first
     # 2) click the four electrode ends (tip-end first per blade)
     python calibrate_j_electrodes.py \
         --tiff "<...>/AD_Cer_..._results/tiff/AD_Cer_..._0001.tiff" \
-        --gap-mm 2.4 --arc-direction down
+        --gap-mm 3.2 --arc-direction down
     # 3) run the rest
     python run_j_co2.py --from-stage analyze
 
@@ -92,13 +92,26 @@ J_DIR      = _resolve_j_dir()
 # dimensions, frame rate and electrode calibration — pick one with --cine.
 CINE_DEFAULT = None
 
-# J-electrode defaults (METHODS.md §1).  px/mm and gap_row are normally taken
-# from j_geometry.json written by calibrate_j_electrodes.py; these are fallbacks.
-J_PX_PER_MM_DEFAULT = 9.167   # fallback only; per-recording value comes from calibration
+# J-electrode geometry (METHODS.md §1).  There is NO hardcoded px/mm: the
+# archival CO2 recordings have no ruler in frame, so the ONLY calibration is the
+# known apex gap.  px/mm is derived per-recording as min_gap_px / min_gap_mm
+# from the clicked tip-ends in j_geometry.json (see resolve_px_per_mm).
+J_GAP_MM_DEFAULT    = 3.2     # confirmed true minimum electrode gap
+                              # (hand_calibration_authoritative_25JUN26; was 2.4)
 J_ARC_DIRECTION     = 'down'  # inverted-V at top, CO2 arc extends downward
 J_BRIGHT_THRESH     = 210     # chosen from arc-vs-plume local-intensity QA (qa_arc_local_intensity_j.py):
                               # arc core saturates ~255, plume sits below ~150; 210 keeps the
                               # whole arc and rejects the plume across the sweep.
+# CO2 flash caps.  The BLADE defaults (16 px FWHM / 20 px eff) are tuned for the
+# thin N2 arc and WRONGLY flag the wide high-flow CO2 arc (real arcs reach ~41 px
+# wide on 0.4mm/1500) and forked thin arcs as flash.  With the corrected
+# branch-complete arc_length_px (analyze_blade), the real-arc eff_width p99 is
+# ~13 across the sweep, so eff=25 keeps every real arc while still catching
+# saturation blobs (whose short medial axis gives eff >> 25); width=50 keeps the
+# genuinely-fat 0.4mm/1500 arcs (max ~41 px) and only trips on extreme blooms.
+# True electrode-bloom flashes are rejected upstream by the gap_row cutoff.
+J_FLASH_EFF_WIDTH   = 25.0
+J_FLASH_ARC_WIDTH   = 50.0
 
 STAGES = ['convert', 'analyze', 'merge', 'events', 'fourier', 'visualize']
 
@@ -121,28 +134,29 @@ def load_geometry(out_root):
     return g
 
 
-def read_calibration_txt(tiff_dir):
-    """Parse px/mm from a hand-written tiff/calibration.txt. Accepts lines like
-    '21 px = 2.4 mm' or '8.75 px/mm'. Returns float px/mm or None."""
-    import re
-    p = Path(tiff_dir) / 'calibration.txt'
-    if not p.exists():
-        return None
-    txt = p.read_text()
-    # Prefer the physical 'N px = M mm' statement — most reliable, and avoids
-    # mis-reading a value embedded in an expression like '30/2.4 px/mm = 12.5'.
-    m = re.search(r'([0-9]*\.?[0-9]+)\s*(?:px|pixels)\s*=\s*([0-9]*\.?[0-9]+)\s*mm', txt)
-    if m and float(m.group(2)) > 0:
-        return float(m.group(1)) / float(m.group(2))
-    # else the RESULT of an explicit '= X px/mm'
-    m = re.search(r'=\s*([0-9]*\.?[0-9]+)\s*px\s*/\s*mm', txt)
-    if m:
-        return float(m.group(1))
-    # else a bare 'X px/mm'
-    m = re.search(r'([0-9]*\.?[0-9]+)\s*px\s*/\s*mm', txt)
-    if m:
-        return float(m.group(1))
-    return None
+def resolve_px_per_mm(geom, cli_override=None):
+    """px/mm for a J recording, derived per-video from the clicked apex gap.
+
+    px/mm = min_gap_px / min_gap_mm, where min_gap_px is the pixel separation of
+    the two clicked electrode tip-ends (j_geometry.json) and min_gap_mm is the
+    known apex gap (3.2 mm).  This is the only calibration available for the
+    archival CO2 data, so it is authoritative — the stored ``px_per_mm`` field is
+    ignored (it has been stale/inconsistent across recordings), and there is no
+    hardcoded numeric fallback.  Returns (px_per_mm, source_string).
+    """
+    if cli_override is not None:
+        print('[warn] --px-per-mm overrides the apex-gap calibration; use only '
+              'for debugging, not for results.')
+        return float(cli_override), 'CLI-override'
+    if not geom:
+        sys.exit('[ERROR] no j_geometry.json found — run calibrate_j_electrodes.py '
+                 'first.  px/mm must come from the clicked apex gap.')
+    gpx = geom.get('min_gap_px')
+    gmm = geom.get('min_gap_mm') or J_GAP_MM_DEFAULT
+    if not gpx or gpx <= 0 or not gmm or gmm <= 0:
+        sys.exit('[ERROR] j_geometry.json lacks a usable min_gap_px / min_gap_mm; '
+                 're-run calibrate_j_electrodes.py (click the two tip-ends).')
+    return float(gpx) / float(gmm), 'apex-gap (min_gap_px/min_gap_mm)'
 
 
 def read_threshold_txt(tiff_dir):
@@ -167,7 +181,7 @@ def read_threshold_txt(tiff_dir):
 
 def analyze_chunks_j(tiff_paths, out_root, px_per_mm, bright_thresh, gap_row,
                      blade_lines, finite_segments, seg_margin_px, fps,
-                     max_arc_px=None, electrode_edges=None,
+                     max_arc_px=None, min_arc_px=None, electrode_edges=None,
                      flash_arc_width=None, flash_eff_width=None,
                      arc_direction=J_ARC_DIRECTION):
     """Run analyze_blade.py on each chunk with the J geometry flags.
@@ -192,6 +206,8 @@ def analyze_chunks_j(tiff_paths, out_root, px_per_mm, bright_thresh, gap_row,
                    '--arc-direction', arc_direction]
             if max_arc_px is not None:
                 cmd += ['--max-arc-px', str(int(max_arc_px))]
+            if min_arc_px is not None:                        # per-recording apex-gap floor
+                cmd += ['--min-arc-px', str(int(min_arc_px))]
             if electrode_edges is not None:                   # curved J-hook geometry
                 cmd += ['--electrode-edges', str(electrode_edges)]
             elif blade_lines is not None:                     # straight-blade geometry
@@ -236,7 +252,8 @@ def merge_csvs_fps(out_dirs, merged_csv, frames_per_tiff, recording_stem, fps):
 def write_run_metadata(out_root, cine_path, n_frames, H, W, fps,
                        px_per_mm, pxmm_src, bright_thresh, bt_src, max_arc_px,
                        use_geom, gap_row, finite, seg_marg, blade_lines, args,
-                       sigma_pxmm_rel=None, sigma_fps_rel=None):
+                       sigma_pxmm_rel=None, sigma_fps_rel=None,
+                       flash_eff_width=None, flash_arc_width=None, min_arc_px=None):
     """Write run_metadata.json capturing every calibration/parameter actually
     used, plus the code version and timestamp, so each result is reproducible
     and self-documenting.  fourier_analysis.py already looks for a sibling
@@ -255,6 +272,7 @@ def write_run_metadata(out_root, cine_path, n_frames, H, W, fps,
         px_per_mm=round(float(px_per_mm), 5), px_per_mm_source=pxmm_src,
         bright_thresh=int(bright_thresh), bright_thresh_source=bt_src,
         max_arc_px=int(max_arc_px),
+        min_arc_px=(int(min_arc_px) if min_arc_px is not None else None),
         arc_direction=J_ARC_DIRECTION,
         geometry_mode='full' if use_geom else 'first-pass (--no-geometry)',
         gap_row=(int(gap_row) if gap_row is not None else None),
@@ -262,7 +280,13 @@ def write_run_metadata(out_root, cine_path, n_frames, H, W, fps,
         segment_margin_px=int(seg_marg),
         blade_lines=(str(blade_lines) if blade_lines is not None else None),
         local_vel_n=int(args.local_vel_n),
-        flash_arc_width=args.flash_arc_width,
+        # Record the ACTUAL flash caps used (resolved CO2 values), not the raw CLI
+        # arg — previously this stored args.flash_arc_width (often None) and never
+        # recorded flash_eff_width, so the sweep's flash criterion was unprovenanced.
+        flash_arc_width=(float(flash_arc_width) if flash_arc_width is not None
+                         else args.flash_arc_width),
+        flash_eff_width=(float(flash_eff_width) if flash_eff_width is not None
+                         else args.flash_eff_width),
         restrike_method=args.restrike_method,
         restrike_threshold=args.restrike_threshold,
         restrike_prominence_frac=args.restrike_prominence_frac,
@@ -294,8 +318,9 @@ def main():
     ap.add_argument('--frames-per-tiff', type=int, default=blade.FRAMES_PER_TIFF,
                     help='Frames per TIFF chunk written by the conversion stage')
     ap.add_argument('--px-per-mm', type=float, default=None,
-                    help='Override px/mm (default: from j_geometry.json, else %.3f)'
-                         % J_PX_PER_MM_DEFAULT)
+                    help='DEBUG override only. Normally px/mm is derived per-video '
+                         'from the clicked apex gap (min_gap_px / 3.2 mm) in '
+                         'j_geometry.json; passing this bypasses that calibration.')
     ap.add_argument('--bright-thresh', type=int, default=None,
                     help='Fixed DN detection threshold for analyze_blade.py. Default: '
                          'per-recording value from j_geometry.json ("bright_thresh") or '
@@ -303,8 +328,12 @@ def main():
                          'else the sweep fallback %d.' % J_BRIGHT_THRESH)
     ap.add_argument('--max-arc-px', type=int, default=None,
                     help='Maximum credible arc AREA (px) before a mask is rejected as a '
-                         'noise flood. Default: max(3000, 10%% of frame area) so the wide '
-                         'high-flow CO2 arc is not clipped (BLADE default 3000 is too small).')
+                         'noise flood. Default: max(3000, J_FLASH_ARC_WIDTH*frame_height) '
+                         '— a geometric cap (widest credible arc spanning the frame).')
+    ap.add_argument('--min-arc-px', type=int, default=None,
+                    help='Minimum arc AREA (px) speckle floor. Default: the apex gap in px '
+                         '(min_gap_px from j_geometry.json), so the floor scales with this '
+                         "recording's px/mm instead of the frozen ADCB-reactor 22 px.")
     ap.add_argument('--freq-max', type=float, default=20000.0,
                     help='Upper edge (Hz) of the Fourier display range. Default 20 kHz to '
                          'capture the kHz gliding-arc cycle (the 500 Hz module default only '
@@ -393,14 +422,10 @@ def main():
     if not tiff_paths:
         print('[ERROR] no TIFF files in %s' % tiff_dir); sys.exit(1)
 
-    # ── px/mm resolution: CLI > j_geometry.json > tiff/calibration.txt > default
+    # ── px/mm: derived per-video from the clicked apex gap (min_gap_px/min_gap_mm).
+    #    No hardcoded fallback — the only calibration available for archival data.
     geom = load_geometry(out_root)
-    cal_pxmm = read_calibration_txt(tiff_dir)
-    px_per_mm = (args.px_per_mm or (geom or {}).get('px_per_mm')
-                 or cal_pxmm or J_PX_PER_MM_DEFAULT)
-    pxmm_src = ('CLI' if args.px_per_mm else
-                'j_geometry.json' if (geom and geom.get('px_per_mm')) else
-                'tiff/calibration.txt' if cal_pxmm else 'DEFAULT')
+    px_per_mm, pxmm_src = resolve_px_per_mm(geom, cli_override=args.px_per_mm)
 
     # ── bright_thresh resolution: CLI > j_geometry.json > threshold_suggested.txt
     #    > sweep fallback (J_BRIGHT_THRESH).  Per-recording where available so the
@@ -415,10 +440,29 @@ def main():
               'j_geometry.json' if geom_bt is not None else
               'tiff/threshold_suggested.txt' if txt_bt is not None else 'DEFAULT')
 
-    # ── max_arc_px resolution: CLI > 10% of frame area (>= BLADE 3000).  The wide
-    #    high-flow CO2 arc can exceed the BLADE 3000 px cap and be wrongly rejected.
+    # ── max_arc_px resolution: CLI > physical cap (max credible arc width x frame
+    #    height).  A real arc is a thin/curved channel; a mask larger than the
+    #    widest credible arc spanning the frame is a noise flood / saturation bloom.
+    #    (The old 10%-of-area heuristic was unprincipled; this is geometric and, at
+    #    256x256, never tighter than it — true blooms are caught by the gap_row
+    #    cutoff anyway.)  Rejections are logged per chunk by analyze_blade.
     max_arc_px = (args.max_arc_px if args.max_arc_px is not None
-                  else max(3000, int(0.10 * H * W)))
+                  else max(3000, int(J_FLASH_ARC_WIDTH * H)))
+
+    # ── min_arc_px resolution: CLI > geometry (the apex gap in px) > BLADE default.
+    #    Frozen 22 px is the ADCB-reactor floor; tie it to THIS recording's apex gap
+    #    so the speckle floor scales with px/mm instead of an unrelated reactor.
+    geom_gap_px = (geom or {}).get('min_gap_px')
+    min_arc_px = (args.min_arc_px if getattr(args, 'min_arc_px', None) is not None
+                  else int(round(geom_gap_px)) if geom_gap_px else None)
+
+    # ── flash caps: CLI > CO2 defaults (J_FLASH_*).  The BLADE 16/20 defaults
+    #    wrongly flag the wide CO2 arc; resolve to CO2-appropriate caps and RECORD
+    #    them in run_metadata (previously unprovenanced).
+    flash_eff_width = (args.flash_eff_width if args.flash_eff_width is not None
+                       else J_FLASH_EFF_WIDTH)
+    flash_arc_width = (args.flash_arc_width if args.flash_arc_width is not None
+                       else J_FLASH_ARC_WIDTH)
 
     use_geom = (geom is not None) and (not args.no_geometry)
 
@@ -441,6 +485,10 @@ def main():
         print('  px/mm          : %.4f  (from %s)' % (px_per_mm, pxmm_src))
         print('  bright-thresh  : %d  (from %s)' % (bright_thresh, bt_src))
         print('  max-arc-px     : %d' % max_arc_px)
+        print('  min-arc-px     : %s' % (min_arc_px if min_arc_px is not None
+                                         else 'BLADE default (22)'))
+        print('  flash caps     : eff>%.0f or width>%.0f px (CO2)' % (
+              flash_eff_width, flash_arc_width))
         if use_geom:
             gap_row  = args.gap_row if args.gap_row is not None else geom.get('gap_row')
             finite   = (not args.no_finite_segments) and bool(geom.get('finite_segments', True))
@@ -468,18 +516,18 @@ def main():
             print('  mode           : FIRST PASS — no geometry, no flash cutoff (%s)' % why)
             print('                   arc_complete uses widest-pair heuristic; '
                   'flashes flagged but not rejected.')
-        if args.flash_arc_width is not None:
-            print('  flash-arc-width: %.0f px (wide-CO2-arc override; default 16)' % args.flash_arc_width)
         chunk_dirs = analyze_chunks_j(
             tiff_paths, out_root, px_per_mm, bright_thresh, gap_row,
             blade_lines, finite, seg_marg, fps, max_arc_px=max_arc_px,
-            electrode_edges=electrode_edges,
-            flash_arc_width=args.flash_arc_width, flash_eff_width=args.flash_eff_width)
+            min_arc_px=min_arc_px, electrode_edges=electrode_edges,
+            flash_arc_width=flash_arc_width, flash_eff_width=flash_eff_width)
         write_run_metadata(out_root, cine_path, n_frames, H, W, fps,
                            px_per_mm, pxmm_src, bright_thresh, bt_src, max_arc_px,
                            use_geom, gap_row, finite, seg_marg, blade_lines, args,
                            sigma_pxmm_rel=args.pxmm_rel_err,
-                           sigma_fps_rel=args.fps_rel_err)
+                           sigma_fps_rel=args.fps_rel_err,
+                           flash_eff_width=flash_eff_width,
+                           flash_arc_width=flash_arc_width, min_arc_px=min_arc_px)
     else:
         chunk_dirs = [tiff_dir.parent / (Path(tp).stem + '_results') for tp in tiff_paths]
         print('[skip] analyze  (px/mm=%.4f from %s)' % (px_per_mm, pxmm_src))
@@ -500,10 +548,8 @@ def main():
         ev_cmd = [PLASMA_ARC / 'event_velocity.py', str(merged_csv), str(out_root),
                   '--px-per-mm', str(px_per_mm), '--fps', str(fps),
                   '--local-vel-n', str(args.local_vel_n)]
-        if args.flash_arc_width is not None:
-            ev_cmd += ['--flash-arc-width', str(args.flash_arc_width)]
-        if args.flash_eff_width is not None:
-            ev_cmd += ['--flash-eff-width', str(args.flash_eff_width)]
+        ev_cmd += ['--flash-arc-width', str(flash_arc_width),
+                   '--flash-eff-width', str(flash_eff_width)]
         if args.pxmm_rel_err is not None:
             ev_cmd += ['--pxmm-rel-err', str(args.pxmm_rel_err)]
         if args.fps_rel_err is not None:
@@ -511,16 +557,21 @@ def main():
         run(ev_cmd, label='event_velocity.py (local N=%d)' % args.local_vel_n)
         event_csv = out_root / 'measurements_all_events.csv'
         if event_csv.exists():
-            run([PLASMA_ARC / 'qa_restrike.py',
+            # Anchor Mode A/B on the calibrated electrode-gap row (non-circular).
+            qa_gap_row = args.gap_row if args.gap_row is not None \
+                else (geom.get('gap_row') if geom else None)
+            qa_cmd = [PLASMA_ARC / 'qa_restrike.py',
                  '--csv', str(event_csv), '--tiff-dir', str(tiff_dir),
                  '--frames-per-tiff', str(args.frames_per_tiff),
                  '--arc-direction', J_ARC_DIRECTION, '--px-per-mm', str(px_per_mm),
-                 '--fps', str(fps),
+                 '--fps', str(fps), '--frame-height', str(H),
                  '--method', args.restrike_method,
                  '--threshold', str(args.restrike_threshold),
                  '--ext-prominence-frac', str(args.restrike_prominence_frac),
-                 '--out', str(out_root / 'qa_restrike.png')],
-                label='qa_restrike.py (Mode A/B)')
+                 '--out', str(out_root / 'qa_restrike.png')]
+            if qa_gap_row is not None:
+                qa_cmd += ['--gap-row', str(int(qa_gap_row))]
+            run(qa_cmd, label='qa_restrike.py (Mode A/B)')
         else:
             print('  [skip] re-strike Mode A/B — events CSV missing')
 

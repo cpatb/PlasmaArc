@@ -31,40 +31,44 @@ verification commands in §7.
 ## 2. Verification-run numbers (target recording)
 
 Target: `HS_0.4mm_1000mL_(CO2)_trig.cine` — 18 758 frames, fps = 200 000,
-px/mm = 12.5 (J-hook hand-segmented), bright_thresh = 160, gap_row = 20.
-Provenance: `run_metadata.json` carries fps, px/mm + source, threshold + source,
-geometry mode, σ budget, git hash, UTC timestamp — acceptance §6.3 ✓.
+px/mm = 11.07 (gap-derived: clicked apex gap 26.56 px / 2.4 mm), bright_thresh =
+160, gap_row = 20. Provenance: `run_metadata.json` carries fps, px/mm + source,
+threshold + source, geometry mode, σ budget, git hash, UTC timestamp — §6.3 ✓.
+
+> **Numbers below reflect the 2026-06-25 full re-convert + reprocess on the
+> apex-gap calibration** (px/mm = `min_gap_px / 2.4`, per video) with Mode A/B
+> anchored on the physical gap and flash-cleaned. They supersede the original
+> robustness-pass figures (which used a stale px/mm, e.g. 12.5 on the target).
 
 ### 2.1 Per-event velocity, with full uncertainty
 
-The pre-pass `event_summary.csv` reported only the OLS slope SE, which on this
-recording is sub-percent (median 0.10 m/s) — misleadingly tight. Adding the
-calibration + fps systematic (σ_pxmm_rel = 5.00 %, σ_fps_rel = 0.100 %) gives:
+The OLS slope SE alone (σ_stat, median 0.30 m/s) is misleadingly tight. Adding
+the calibration + fps systematic (σ_pxmm_rel = 5.00 %, σ_fps_rel = 0.100 %):
 
-| Stat                                  | Pre-pass (stat only) | After robustness (stat ⊕ sys) |
-| ------------------------------------- | -------------------: | ----------------------------: |
-| Median event velocity                 | 9.47 m/s             | 9.47 ± 0.59 m/s               |
-| Median σ_stat (OLS slope SE)          | 0.10 m/s             | 0.10 m/s                      |
-| Median σ_sys (px/mm ⊕ fps)            | —                    | 0.47 m/s                      |
-| Median σ_total                        | —                    | 0.59 m/s                      |
+| Stat                                  | Value (target recording)      |
+| ------------------------------------- | ----------------------------: |
+| Median event velocity                 | 10.70 ± 0.66 m/s              |
+| Median σ_stat (OLS slope SE)          | 0.30 m/s                      |
+| Median σ_sys (px/mm ⊕ fps)            | 0.54 m/s                      |
+| Median σ_total                        | 0.66 m/s                      |
 
-The point estimate `vel_ms` is **unchanged** (this is a derived recompute, not
-a re-fit). What changes is the honesty of the error bar: it is now ~6× larger
-because the calibration uncertainty had been entirely outside the budget.
+The error bar is ≈ 2× the slope-SE-only value because the calibration term had
+been entirely outside the budget.
 
-The recompute applied uniformly to all five existing `_results/` dirs:
+Across all six recordings (σ_sys = 5 % of v; σ_total = σ_stat ⊕ σ_sys):
 
 | Recording                              | n events | median v (m/s) | σ_sys (m/s) | σ_total (m/s) |
 | -------------------------------------- | -------: | -------------: | ----------: | ------------: |
-| HS_0.4mm_1000mL_(CO2)_trig             |       53 | 9.47           | 0.47        | 0.59          |
-| HS_0.4mm_1500mL_(CO2)_trig             |       50 | 10.01          | 0.50        | 0.79          |
-| HS_0.4mm_1500mL_(CO2)_trig_repeat      |       31 | 6.07           | 0.30        | 0.52          |
-| HS_0.8mm_1500mL_(CO2)_trig(2)          |       24 | 7.24           | 0.36        | 0.46          |
-| HS_1.2mm_1500mL_(CO2)                  |       74 | 3.68           | 0.18        | 0.23          |
+| HS_0.4mm_1000mL_(CO2)_trig             |       53 | 10.70          | 0.54        | 0.66          |
+| HS_0.4mm_1500mL_(CO2)_trig             |       50 | 10.35          | 0.52        | 0.82          |
+| HS_0.4mm_1500mL_(CO2)_trig_repeat      |       31 | 6.22           | 0.31        | 0.53          |
+| HS_0.8mm_1500mL_(CO2)_trig(2)          |       24 | 6.13           | 0.31        | 0.39          |
+| HS_0.8mm_..._trig_repeat_weird(2)      |       22 | 7.89           | 0.39        | 0.50          |
+| HS_1.2mm_1500mL_(CO2)                  |      669 | 4.22           | 0.21        | 0.24          |
 
 **Discrepancy worth surfacing (brief §0).** The 0.4 mm / 1500 mL/min condition
-has two recordings; their per-event medians differ by 3.94 m/s (10.01 vs 6.07),
-**far more than the per-recording σ_total** (~0.65 m/s). The repeat-to-repeat
+has two recordings; their per-event medians differ by ≈ 4.1 m/s (10.35 vs 6.22),
+**far more than the per-recording σ_total** (~0.6 m/s). The repeat-to-repeat
 spread dominates the systematic at that corner — likely a real run-to-run
 variability rather than a measurement artefact, but it deserves more repeats
 before any conclusion at that operating point is leaned on.
@@ -188,16 +192,16 @@ Method (cited verbatim in every figure caption):
 
 | d (mm) | Q (mL/min) | n repeats | Re        | σ_Re   | Ma   | median v_arc (m/s) | σ_v_total |
 | ----: | ---------: | --------: | --------: | -----: | ---: | -----------------: | --------: |
-| 1.2   | 1500       | 1         | 3 253     |   406  | 0.08 | 3.68               | 0.25      |
-| 0.8   | 1500       | 1         | 4 879     |   608  | 0.18 | 7.24               | 0.97      |
-| 0.4   | 1000       | 1         | 6 506     |   811  | 0.49 | 9.47               | 0.75      |
-| 0.4   | 1500       | 2         | 9 759     | 1 217  | 0.74 | 8.04 (mean)        | 2.01      |
+| 1.2   | 1500       | 1         | 3 253     |   406  | 0.08 | 4.22               | 0.22      |
+| 0.8   | 1500       | 2         | 4 879     |   608  | 0.18 | 7.01 (mean)        | 0.95      |
+| 0.4   | 1000       | 1         | 6 506     |   811  | 0.49 | 10.70              | 0.85      |
+| 0.4   | 1500       | 1 (repeat excl.) | 9 759 | 1 217  | 0.74 | 10.35              | 0.92      |
 
 ### Figures (300 DPI + PDF + sidecar caption)
 
 - [`reynolds_arc_velocity.png`](../Desktop/Plasma%20Arc/J%20Electrode/Reynolds_comparison/reynolds_arc_velocity.png) — median arc velocity vs Re.
 - [`reynolds_mode_b_fraction.png`](../Desktop/Plasma%20Arc/J%20Electrode/Reynolds_comparison/reynolds_mode_b_fraction.png) — Mode-B re-strike fraction vs Re.
-- [`reynolds_cycle_frequency.png`](../Desktop/Plasma%20Arc/J%20Electrode/Reynolds_comparison/reynolds_cycle_frequency.png) — mean re-strike cycle frequency (fps / mean cycle_frames) vs Re.
+- [`reynolds_cycle_time.png`](../Desktop/Plasma%20Arc/J%20Electrode/Reynolds_comparison/reynolds_cycle_time.png) — mean re-strike cycle **duration** (ms; 1000·mean cycle_frames/fps) vs Re.
 
 ### Confound — STATED PROMINENTLY IN EVERY CAPTION
 
@@ -226,7 +230,7 @@ Applied to all six figures this pass produced:
 - `sensitivity_overview.{pdf,png,txt}`
 - `reynolds_arc_velocity.{pdf,png,txt}`
 - `reynolds_mode_b_fraction.{pdf,png,txt}`
-- `reynolds_cycle_frequency.{pdf,png,txt}`
+- `reynolds_cycle_time.{pdf,png,txt}`
 
 Each one:
 - Vector PDF + 300 DPI PNG (`figstyle.save` writes both).
@@ -288,18 +292,17 @@ the conclusions if addressed.
    `requested vs achievable fps` would give a per-recording σ_fps; not
    implemented in this pass.
 
-6. **0.4 mm / 1500 mL/min repeat spread.** The two repeats give 10.01 vs
-   6.07 m/s median — a 3.94 m/s gap, swamping the σ_total ≈ 0.65 m/s of
+6. **0.4 mm / 1500 mL/min repeat spread.** The two repeats give 10.35 vs
+   6.22 m/s median — a ≈ 4.1 m/s gap, swamping the σ_total ≈ 0.6 m/s of
    each individual recording. Either (a) a real run-to-run physics
    difference at the highest-flow corner, or (b) one of the two recordings
    has a calibration error that wasn't caught. Both possible; the data are
    reported faithfully without trying to "fix" them to match.
 
-7. **Mode B / cycle-frequency uncertainty.** The per-recording σ for Mode-B
-   fraction is the Wilson SE on `n_B/n`; the cycle-frequency σ is the SE on
-   the mean of `fps/cycle_frames`. Neither includes the fps systematic
-   (σ_f = f · σ_fps_rel adds ≈ 1 Hz at f = 1 kHz, well below the SE).
-   Adequate for the Re plots; mention here for completeness.
+7. **Mode B / cycle-duration uncertainty.** The per-recording σ for Mode-B
+   fraction is the Wilson SE on `n_B/n`; the cycle-duration σ is the SE on
+   the mean of `1000·cycle_frames/fps`. Neither includes the fps systematic
+   (negligible vs the SE). Adequate for the Re plots; mention here for completeness.
 
 ---
 
@@ -396,24 +399,28 @@ this condition pair is **required**, not a stylistic choice.
 
 Added `sweep_utils.py` with an `.excluded_from_sweep` sentinel-file
 mechanism. Marking `<repeat>_results/.excluded_from_sweep` (with a rationale
-inside the file) causes the four cross-recording aggregators
-(`reynolds_comparison.py`, `mode_ratio_vs_re.py`, `asymmetry_vs_time.py`,
-`warmup_time.py`) to skip it. The repeat's own `_results/` directory is
+inside the file) causes the cross-recording aggregators
+(`reynolds_comparison.py`, `mode_ratio_vs_re.py`, `asymmetry_vs_time.py`)
+to skip it. The repeat's own `_results/` directory is
 preserved intact — every per-recording figure for the repeat is still
 valid; only cross-recording aggregations now omit it. Per-recording
 diagnostics (`recompute_uncertainty.py`, `verify_fps_threading.py`) still
 process the repeat for completeness.
 
 After regenerating with the exclusion in place, the Re vs arc-velocity
-trend (`reynolds_arc_velocity.{pdf,png}`) is monotonic:
-3.68 → 7.24 → 9.47 → 10.01 m/s, error bars from the per-recording
-σ_total (not the previously-inflated repeat-spread term).
+trend (`reynolds_arc_velocity.{pdf,png}`) was monotonic on the then-current
+calibration: 3.68 → 7.24 → 9.47 → 10.01 m/s.
+
+> **Superseded by the 2026-06-25 recalibration (see final addendum):** on the
+> apex-gap calibration the values are 4.22 → 7.01 → 10.70 → 10.35 m/s, which
+> rises to a plateau and is **no longer strictly monotonic** — the highest-Re
+> 0.4 mm/1500 point (10.35) sits just below the 0.4 mm/1000 point (10.70).
 
 ### Open risk
 
 This is now a single-recording number at 0.4 mm / 1500 mL. Honest methods
-text should say so: the recording-level σ_total is ≈ 0.89 m/s but the
-repeat spread we measured at this condition is 3.94 m/s. The cleanest path
+text should say so: the recording-level σ_total is ≈ 0.8 m/s but the
+repeat spread we measured at this condition is ≈ 4.1 m/s. The cleanest path
 forward is 2–3 more independent recordings at this condition with the
 chamber fully repurged between each, to bracket how much of the apparent
 spread is endogenous run-to-run vs setup-state drift.
@@ -462,13 +469,12 @@ the cross-recording bar plot in
 events spanning 4.37 seconds, the test has the statistical power that the
 short ~ 95 ms recordings did not.
 
-The exponential warm-up fit (`warmup_time.py`) does NOT capture this drift
-— it returns τ = 13.9 ± 16.8 s with R² ≈ 0 and the conditioning flags
-all fire. The 4.37 s recording is too short relative to the underlying
-timescale; the drift looks approximately linear within the window
-(≈ +0.34 m/s per second) and would need a recording on the order of
-30–60 s to resolve τ if the dynamics are exponential, or a different
-model entirely if they are not.
+An exponential warm-up time-constant fit was attempted but did NOT capture this
+drift (R² ≈ 0, all conditioning flags fired): the 4.37 s recording is too short
+relative to the underlying timescale. The drift looks approximately linear within
+the window (≈ +0.34 m/s per second). The τ quantification and its figures were
+**later removed entirely** as uninformative (see the 2026-06-25 addendum); only
+the model-free first-vs-last drift test is retained.
 
 ### Calibration note (carried over from the partial run)
 
@@ -486,7 +492,7 @@ re-trigger reprocessing.
 Cross-recording figures regenerated (1.2 mm point shifts in every panel):
 - `Reynolds_comparison/reynolds_arc_velocity.{pdf,png}` (4.21 vs 3.68 m/s)
 - `Reynolds_comparison/reynolds_mode_b_fraction.{pdf,png}` (0.472 unchanged)
-- `Reynolds_comparison/reynolds_cycle_frequency.{pdf,png}`
+- `Reynolds_comparison/reynolds_cycle_time.{pdf,png}`
 - `Reynolds_comparison/mode_ratio_vs_re.{pdf,png}` (now using 1 346 re-strikes)
 - `Reynolds_comparison/asymmetry_vs_re.{pdf,png}` (\|asym\| = 0.187 vs 0.213)
 - `Reynolds_comparison/temporal_summary_xrecording.{pdf,png}` (1.2 mm now stable-+)
@@ -503,4 +509,71 @@ The previous-pass partial outputs are preserved at
 `HS_1.2mm_1500mL_(CO2)_results/__partial_prerobust_backup__/` (the 10
 original per-chunk dirs + the original tiff folder). They are not used by
 any current aggregator.
+
+---
+
+## Addendum — 2026-06-25: apex-gap recalibration, full reprocess, non-circular flash-clean Mode A/B, warmup removed
+
+This addendum is **authoritative**; where earlier sections quote different
+numbers they are superseded.
+
+### Calibration rule (no hardcoded px/mm)
+The archival CO₂ videos have no in-frame ruler, so px/mm is derived **per video**
+from the known apex gap: `px/mm = min_gap_px / 2.4 mm`. `run_j_co2.py` now computes
+this from `j_geometry.json` and errors out if a recording is uncalibrated (no
+numeric fallback); `segment_electrodes.py` writes the consistent value. The
+earlier `j_geometry.json` `px_per_mm` fields (e.g. 8.75) that disagreed with their
+own clicked gap are gone. Per-video values span ≈ 8.5–11.2 px/mm.
+
+### Full re-convert + reprocess
+All six recordings were re-converted from `.cine` and reprocessed end-to-end
+(`run_j_co2 --from-stage convert`, each with its original bright_thresh:
+160/220/235/160/210/175), so TIFFs, velocity maps, native overlays, CSVs, and
+Mode A/B are one consistent pass. This supersedes the linear rescale used as an
+interim step.
+
+### Mode A/B hardened (`qa_restrike.py`)
+- **Non-circular:** apex anchored on the calibrated `gap_row` (physical gap),
+  not the 5th-percentile of the tip trajectory.
+- **Flash-clean:** flashes (criterion 3) removed *before* re-strike detection.
+- **Process QA per recording:** `re_strikes_qa.png` + `re_strikes_qa_summary.txt`
+  (detected frames, % flash-rejected, apex source, thresholds, A/B counts).
+
+Effect: Mode-B fractions are higher than the original pass (the percentile apex
+had suppressed Mode B). Current frac_B: 0.45 (0.4/1000), 0.83 (0.4/1500),
+0.80 (0.8/1500 #2), 0.70 (0.8 repeat), 0.77 (1.2 mm).
+
+### Authoritative sweep numbers (gap calibration)
+| d (mm) | Q | Re | median v_arc (m/s) | σ_total | frac_B | cycle (ms) |
+| ----: | ----: | ----: | ----: | ----: | ----: | ----: |
+| 1.2 | 1500 | 3 253 | 4.22 | 0.22 | 0.77 | 3.39 |
+| 0.8 | 1500 | 4 879 | 7.01 | 0.95 | 0.75 | 1.57 |
+| 0.4 | 1000 | 6 506 | 10.70 | 0.85 | 0.45 | 0.98 |
+| 0.4 | 1500 | 9 759 | 10.35 | 0.92 | 0.83 | 0.61 |
+
+The arc-velocity trend rises with Re to a plateau (10.70 at 0.4/1000) and is
+**not strictly monotonic** — the highest-Re point (10.35) dips slightly below it.
+
+### Warmup removed
+The exponential warm-up τ fit was uninformative (R² ≈ 0 / negative; recordings
+too short to resolve τ). The `warmup_time.py` script and all `warmup_*` /
+`warmup_fit_*` figures + CSVs were deleted; the cycle panel is now
+`reynolds_cycle_time` (duration in ms), not frequency.
+
+---
+
+## Addendum — 2026-06-29: dead-zone valley Mode A/B + 10-segment primary
+
+The re-strike initiation-depth distribution is **bimodal** (near-apex reset peak +
+deep back-breakdown peak, dead zone ~3.4–4.6 mm). The Mode A/B cut was moved from
+`norm_pos > 0.10` (which sliced the first peak) to the **dead-zone valley**
+(`apply_valley_modes.py`, auto-detected per recording; reversible), and the
+**10-segment whole-arc detector (`npoint_restrikes.csv`) is now the primary basis**
+for all mode characteristics (the tip detector is a cross-check). Consequences
+(10-segment, valley): Mode B self-sustains (P(B|B)=0.93; first-order Markov
+p=5×10⁻⁶⁴, NOT memoryless); **every reset interval is followed by Mode A**
+(post-reset p_A=1.00 vs 0.08 background, p=7×10⁻⁶⁰); last-arc geometry predicts the
+next mode (CV-AUC ≈ 0.75–0.82). New mode-dynamics/N-segment suite + paper figures:
+see `MODE_DYNAMICS_ANALYSIS.md`. Paper figures regenerated into a fresh
+`paper_figures/` (prior set archived as `paper_figures_29JUN26_950PM/`).
 

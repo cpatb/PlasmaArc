@@ -15,7 +15,7 @@
 | Subset | Gas | Geometry | Calibration | FPS | Data folder |
 |---|---|---|---|---|---|
 | **BLADE 11MAY26** | N₂, 1.5 SLPM, 0.6 mm nozzle | two blade electrodes, 25° **half-angle** wedge (~47–50° full) | **8.8 px/mm** | 200 kHz | `…/BLADE/BLADE 11MAY26/` |
-| **J-electrode (ADCB)** | CO₂ | inverted-V electrodes, 2.4 mm gap | 9.167 px/mm | 200 kHz | `…/J electrode arc/`, `…/BLADE/ADCB_*` |
+| **J-electrode (ADCB)** | CO₂ | inverted-V electrodes, 2.4 mm gap | px/mm **derived per-video** from the 2.4 mm apex gap (`min_gap_px / 2.4`) | 200 kHz | `…/J electrode arc/`, `…/BLADE/ADCB_*` |
 
 Two BLADE 11MAY26 recordings, identical except reactor orientation:
 - **downward** (291,353 frames): apex/electrodes at **top**, arc descends, arc front = bottommost pixel.
@@ -151,7 +151,7 @@ differs, and the J configuration specifies it explicitly:
 | Geometry source | `detect_blade_lines.py` (auto, **infinite** lines) | `calibrate_j_electrodes.py` (**interactive**, **finite** segments) |
 | Electrode ends | n/a (blades span the frame) | **specified** — tip-end + far-end per blade |
 | Minimum gap | n/a | **specified** — ~2.4 mm at the apex |
-| px/mm | 8.8 | 9.167 (or derived from the clicked min-gap) |
+| px/mm | 8.8 | **derived per-video** from the apex gap: `min_gap_px / 2.4 mm` (no fixed value; range ~8.5–11.2 across the sweep) |
 | `gap_row` | hand-set (26 / 241) | derived from the clicked tip-ends |
 
 **Why a different geometry step.** BLADE blades are effectively infinite (the arc
@@ -236,10 +236,12 @@ of intermediate TIFF for the full 873 k frames; use `--max-frames` to smoke-test
 
 ## 3. Design decisions & rationale (the "why")
 
-**Calibration is threaded explicitly (8.8 px/mm).** Module defaults are the
-ADCB/J-electrode value (9.167); `run_11may26.py` overrides every stage with 8.8.
-Standalone invocations must pass `--px-per-mm 8.8` or they silently use the wrong
-scale.
+**Calibration is threaded explicitly.** For BLADE 11MAY26, `run_11may26.py`
+overrides every stage with **8.8 px/mm**; standalone invocations must pass
+`--px-per-mm 8.8` or they silently use the wrong scale. For the **J-electrode**
+path there is no fixed px/mm at all: `run_j_co2.py` derives it per-video from the
+clicked apex gap (`min_gap_px / 2.4 mm`) and errors out if a recording has not
+been gap-calibrated (no numeric fallback).
 
 **Fixed detection threshold DN>100 (not adaptive Otsu).** The arc is a small
 bright object on a near-black field; per-frame Otsu amplifies noise on dark
@@ -358,3 +360,29 @@ the top of `main()`.
 2. After that: `mode_velocity_compare.py` and `mode_arclength_compare.py` (§1.3).
 3. Optional: decide whether to propagate the flash filter into `qa_restrike.py`
    (§5 TODO), then re-run `--from-stage events`.
+
+---
+
+## 7. Mode A/B definition & the 10-segment mode-dynamics suite (2026-06-29)
+
+The Mode A/B boundary is the **dead-zone valley** of the bimodal re-strike
+initiation-depth distribution (NOT `norm_pos > 0.10`), and the **primary detector
+is the 10-segment whole-arc detector** (`npoint_restrikes.csv`). Pipeline:
+
+```powershell
+python npoint_geometry.py build --all          # row+col N-point cache (one-time)
+python npoint_restrike.py detect --all         # 10-segment re-strikes (initial 0.10 cut)
+python apply_valley_modes.py                   # adopt the valley cut (tip + npoint); reversible --restore
+# mode-dynamics + characteristics (all default to --source npoint):
+python mode_transition_analysis.py --data-root "<Plasma Arc>"   # conditional probs / Markov
+python reset_interval_analysis.py --all                          # reset => Mode A test
+python restrike_geometry_predictor.py --all --source npoint      # last-arc geometry -> next mode
+python restrike_location_maps.py --all --source npoint           # initiation heatmaps
+python segment_velocity.py --all ; python segment_velocity_map.py --all   # per-segment velocity
+python npoint_arc_stats.py --all                                 # tortuosity / arc stats by mode, vs Re
+# paper figures (fresh dir; archive paper_figures_* untouched):
+cd "<J Electrode>\paper_figures" ; python build_figure_data.py ; python hs_figures.py ; python hs_figures_new.py
+```
+
+Full method + findings: `MODE_DYNAMICS_ANALYSIS.md`. Originals are backed up
+(`*__pre_valley_backup.csv`); `apply_valley_modes.py --restore` reverts.

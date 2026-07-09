@@ -5,6 +5,13 @@ qa_restrike.py  —  Re-strike–based Mode A / Mode B characterization (non-cir
 Mode A : re-initiation AT / very close to the minimum electrode gap (apex).
 Mode B : re-initiation AWAY from the apex (partial re-ignition / back-breakdown).
 
+NOTE (Mode A/B threshold, revised): the `norm_pos > 0.10` cut written here is the
+INITIAL cut. The AUTHORITATIVE Mode A/B boundary is the DEAD-ZONE VALLEY between the
+two peaks of the (bimodal) initiation-depth distribution, applied downstream by
+`apply_valley_modes.py` (which rewrites the `mode` column, backing up the original).
+The 10-segment whole-arc detector (`npoint_restrike.py` / `npoint_restrikes.csv`) is
+the PRIMARY detector; this tip detector is the cross-check. See MODE_DYNAMICS_ANALYSIS.md.
+
 A "re-strike" is each re-initiation of the arc — every local MINIMUM of the
 arc-tip trajectory (the bottom of a retreat, where the next advance begins).
 This is detected directly from the tip motion, anchored on the ARC EXTENSIONS
@@ -46,6 +53,7 @@ from scipy.ndimage import uniform_filter1d
 import tifffile
 
 from analyze_blade import binarize
+import arc_filter
 
 FPS_DEFAULT = 200_000
 MODE_COLOR = {'A': '#1565C0', 'B': '#C62828'}
@@ -107,13 +115,22 @@ class FrameSource:
                 pass
 
 
-def apex_and_range(tip, complete=None):
-    if complete is not None and complete.sum() >= 20:
-        erow = float(np.percentile(tip[complete], 5))
+def apex_and_range(tip, complete=None, apex_override=None):
+    """Apex (gap) row and effective length in the arc_tip_row coordinate.
+
+    With ``apex_override`` (the calibrated electrode-gap row) the apex is anchored
+    on the PHYSICAL gap, so norm_pos = (tip - apex)/l_eff is non-circular. Without
+    it we fall back to the 5th-percentile of where the tip actually went (the old
+    behaviour) and say so in the QA. Returns (apex_row, l_eff, source_str).
+    """
+    if apex_override is not None and np.isfinite(apex_override):
+        erow = float(apex_override); src = 'calibrated gap_row'
+    elif complete is not None and complete.sum() >= 20:
+        erow = float(np.percentile(tip[complete], 5)); src = 'p5(complete) [fallback]'
     else:
-        erow = float(np.percentile(tip, 5))
+        erow = float(np.percentile(tip, 5)); src = 'p5(all) [fallback]'
     l_eff = max(float(np.percentile(tip, 90)) - erow, 1.0)
-    return erow, l_eff
+    return erow, l_eff, src
 
 
 def detect_restrikes(tip, erow, l_eff, ext_prom_frac, min_cycle, smooth):
@@ -154,6 +171,13 @@ def main():
     ap.add_argument('--frames-per-tiff', type=int, default=None,
                     help='chunk size (required with --tiff-dir for global-frame->page)')
     ap.add_argument('--arc-direction', choices=['up', 'down'], required=True)
+    ap.add_argument('--gap-row', type=int, default=None,
+                    help='Calibrated electrode-gap row (raw image row, from '
+                         'j_geometry.json). Anchors the Mode A/B apex on the '
+                         'PHYSICAL gap (non-circular). Omit to fall back to the '
+                         '5th-percentile of the tip trajectory.')
+    ap.add_argument('--frame-height', type=int, default=256,
+                    help='Image height in px, for the up-direction apex flip.')
     ap.add_argument('--px-per-mm', type=float, default=8.8)
     ap.add_argument('--fps', type=float, default=FPS_DEFAULT)
     ap.add_argument('--thresh', type=int, default=100, help='binarization DN threshold')
@@ -171,17 +195,34 @@ def main():
     for c in ['arc_tip_row', 'arc_tip_col', 'arc_complete']:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors='coerce')
-    det = df[(df['arc_detected'] == 1)].dropna(subset=['arc_tip_row']).sort_values(['file', 'frame'])
+
+    # ── Flash-clean (criterion 3): reject flashes BEFORE re-strike detection so
+    #    saturation bursts cannot create phantom re-strikes or mislabels. Uses the
+    #    canonical is_flash already in the CSV (arc_filter preserves it).
+    df = arc_filter.add_flash_flag(df)
+    detected = pd.to_numeric(df['arc_detected'], errors='coerce').fillna(0).astype(int) == 1
+    n_detected = int(detected.sum())
+    n_flash = int((detected & df['is_flash']).sum())
+    det = df[detected & (~df['is_flash'])].dropna(subset=['arc_tip_row']).sort_values(['file', 'frame'])
+
+    # ── Non-circular apex: anchor on the calibrated electrode-gap row, mapped into
+    #    the arc_tip_row "distance from electrode" coordinate (down: row as-is;
+    #    up: flipped H-1-row, matching analyze_blade).
+    apex_cal = None
+    if args.gap_row is not None:
+        apex_cal = float(args.gap_row if args.arc_direction == 'down'
+                         else args.frame_height - 1 - args.gap_row)
 
     recs = []
     traj = {}
+    apex_src = 'n/a'
     for fname, g in det.groupby('file'):
         frames = g['frame'].values.astype(int)
         tip = g['arc_tip_row'].values.astype(float)
         col = g['arc_tip_col'].values.astype(float) if 'arc_tip_col' in g.columns else np.full(len(g), np.nan)
         complete = (pd.to_numeric(g['arc_complete'], errors='coerce').fillna(0).values == 1) \
             if 'arc_complete' in g.columns else None
-        erow, l_eff = apex_and_range(tip, complete)
+        erow, l_eff, apex_src = apex_and_range(tip, complete, apex_override=apex_cal)
         rk, peaks, ext_prom = detect_restrikes(tip, erow, l_eff,
                                                args.ext_prominence_frac, args.min_cycle_frames, args.smooth)
         traj[fname] = (frames, tip, erow, l_eff, [r['idx'] for r in rk], peaks)
@@ -209,17 +250,49 @@ def main():
 
     n_a = int((rs['mode'] == 'A').sum()); n_b = int((rs['mode'] == 'B').sum())
     cyc = rs[rs['cycle_frames'] > 0]['cycle_frames']
-    print('Re-strikes detected: %d   Mode A: %d (%.0f%%)   Mode B: %d (%.0f%%)   [method=%s]' % (
-        len(rs), n_a, 100 * n_a / len(rs), n_b, 100 * n_b / len(rs), args.method))
+    cyc_ms = (cyc.mean() / args.fps * 1e3) if len(cyc) else float('nan')
+
+    # ── process QA — the user-checkable record of HOW the labels were produced
+    apex_note = ('PHYSICAL gap (non-circular)' if apex_cal is not None
+                 else 'statistical p5 of tip (no --gap-row given — circular)')
+    print('--- Mode A/B QA ---------------------------------------------------')
+    print('Detected arc frames        : %d' % n_detected)
+    print('Rejected as flash (crit 3) : %d (%.2f%%)' % (
+        n_flash, 100 * n_flash / max(n_detected, 1)))
+    print('Apex anchor                : %s  -> %s' % (apex_src, apex_note))
+    print('Re-strikes detected: %d   Mode A: %d (%.0f%%)   Mode B: %d (%.0f%%)   [method=%s, thr=%.2f]' % (
+        len(rs), n_a, 100 * n_a / len(rs), n_b, 100 * n_b / len(rs), args.method, args.threshold))
     print('Distributions (use these to choose the cut):')
     print(pct_line('norm_pos', rs['norm_pos'].values))
     print(pct_line('retreat_frac', rs['retreat_frac'].values))
     if len(cyc):
-        print('Cycle period: mean %.0f frames (%.1f us, %.1f kHz)' % (
-            cyc.mean(), cyc.mean() / args.fps * 1e6, args.fps / cyc.mean() / 1e3))
+        print('Cycle period: mean %.0f frames (%.3f ms, %.1f kHz)' % (
+            cyc.mean(), cyc_ms, args.fps / cyc.mean() / 1e3))
     out_csv = Path(args.out).with_name('re_strikes_qa.csv')
     rs.to_csv(out_csv, index=False)
     print('Wrote %s' % out_csv)
+
+    # auditable text sidecar capturing the whole classification process
+    summary = Path(args.out).with_name('re_strikes_qa_summary.txt')
+    summary.write_text('\n'.join([
+        'Mode A/B classification QA',
+        'source csv          : %s' % args.csv,
+        'detected arc frames : %d' % n_detected,
+        'rejected as flash   : %d (%.2f%%)  [criterion 3, before re-strike detection]'
+        % (n_flash, 100 * n_flash / max(n_detected, 1)),
+        'apex anchor         : %s' % apex_src,
+        'apex meaning        : %s' % apex_note,
+        'gap_row (raw)       : %s   arc_direction: %s   frame_height: %d'
+        % (args.gap_row, args.arc_direction, args.frame_height),
+        'ext_prominence_frac : %.3f   min_cycle_frames: %d   smooth: %d'
+        % (args.ext_prominence_frac, args.min_cycle_frames, args.smooth),
+        'method / threshold  : %s / %.3f (abs)  %.3f (rel)'
+        % (args.method, args.threshold, args.rel_threshold),
+        're-strikes          : %d   Mode A: %d   Mode B: %d (%.1f%% B)'
+        % (len(rs), n_a, n_b, 100 * n_b / len(rs)),
+        'mean cycle          : %.3f ms' % cyc_ms,
+    ]) + '\n', encoding='utf-8')
+    print('Wrote %s' % summary)
 
     # ---- figure ----
     src = FrameSource(tiff=args.tiff, tiff_dir=args.tiff_dir,
@@ -285,6 +358,12 @@ def main():
         ax.axis('off')
     src.close()
 
+    fig.suptitle(
+        'Mode A/B QA   |   apex: %s   |   flash-rejected: %d/%d (%.1f%%)   |   '
+        'A=%d  B=%d (%.0f%% B)' % (
+            apex_src, n_flash, n_detected, 100 * n_flash / max(n_detected, 1),
+            n_a, n_b, 100 * n_b / len(rs)),
+        fontsize=10, y=0.995)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(args.out, dpi=110, facecolor='white')
     plt.close(fig)
