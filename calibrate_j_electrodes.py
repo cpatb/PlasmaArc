@@ -77,7 +77,8 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-DARK_GUARD = 35
+import electrode_geometry as eg
+
 DEFAULT_GAP_MM = 3.2          # confirmed true minimum electrode gap
                              # (hand_calibration_authoritative_25JUN26; was 2.4)
 DEFAULT_SEG_MARGIN_PX = 6     # how far past a clicked end a foot may still attach
@@ -86,13 +87,6 @@ _BLADE_LABELS = ['Blade A', 'Blade B']
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
-
-def _find_first_arc_frame(tif, n_search=1000):
-    for i in range(min(n_search, len(tif.pages))):
-        if int(tif.pages[i].asarray().max()) >= DARK_GUARD:
-            return i
-    return 0
-
 
 def _parse_points(s):
     """'r,c ; r,c ; r,c ; r,c' -> list of 4 (row,col) tuples (tip,far per blade)."""
@@ -131,11 +125,7 @@ def derive_geometry(clicks, gap_mm, arc_direction, seg_margin_px,
     #           (row < gap_row), so place gap_row just above the tip-ends.
     #   'up'    electrodes at LARGE rows; reject below (row > gap_row), so place
     #           gap_row just below the tip-ends.
-    tip_mean_row = 0.5 * (A_tip[0] + B_tip[0])
-    if arc_direction == 'down':
-        gap_row = int(np.floor(tip_mean_row)) - 2
-    else:
-        gap_row = int(np.ceil(tip_mean_row)) + 2
+    gap_row = eg.gap_row_from_tips(A_tip[0], B_tip[0], arc_direction)
 
     # per-blade angle from vertical (expect ~7.5 deg each for a 15 deg V)
     def ang_from_vertical(p_tip, p_far):
@@ -271,7 +261,7 @@ def main():
         print('Headless mode — using supplied points (tip-end first per blade).')
     else:
         with tifffile.TiffFile(str(tiff_path)) as tif:
-            frame_idx = args.frame if args.frame is not None else _find_first_arc_frame(tif)
+            frame_idx = args.frame if args.frame is not None else eg.find_first_arc_frame(tif)
             raw = tif.pages[frame_idx].asarray()
         print('Loaded %s  frame %d  max DN=%d' % (tiff_path.name, frame_idx, raw.max()))
         clicks = _pick_interactive(raw, frame_idx)

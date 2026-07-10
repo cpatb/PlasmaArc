@@ -48,9 +48,8 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
+import electrode_geometry as eg
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.lines import Line2D
 
 # ── config (mirrors blade_run2.py) ────────────────────────────────────────────
 BLADE_DIR   = Path.home() / 'OneDrive' / 'Desktop' / 'BLADE'
@@ -68,13 +67,6 @@ TIFF_FILES = [
 
 _BLADE_COLORS = ['#00FFFF', '#FF8800']   # cyan = A, orange = B
 _BLADE_LABELS = ['Blade A', 'Blade B']
-
-
-def _find_first_arc_frame(tif, n_search: int = 1000) -> int:
-    for i in range(min(n_search, len(tif.pages))):
-        if int(tif.pages[i].asarray().max()) >= DARK_GUARD:
-            return i
-    return 0
 
 
 def _extend_line_to_frame(r1, c1, r2, c2, H, W, pad=20):
@@ -150,7 +142,7 @@ def main() -> None:
     print(f'Loading  {tiff_path.name}')
     with tifffile.TiffFile(str(tiff_path)) as tif:
         frame_idx = (args.frame if args.frame is not None
-                     else _find_first_arc_frame(tif))
+                     else eg.find_first_arc_frame(tif))
         raw = tif.pages[frame_idx].asarray()
     H, W = raw.shape[:2]
     print(f'  Frame {frame_idx}  max DN = {raw.max()}')
@@ -184,13 +176,6 @@ def main() -> None:
     # ── click sequence: 2 points per blade ────────────────────────────────────
     # clicks[0:2] = blade A,  clicks[2:4] = blade B
     clicks: list[tuple[float, float]] = []
-    step_labels = [
-        'Click point 1 on  BLADE A  (cyan)  — anywhere along its edge',
-        'Click point 2 on  BLADE A  (cyan)  — a second point further along',
-        'Click point 1 on  BLADE B  (orange) — anywhere along its edge',
-        'Click point 2 on  BLADE B  (orange) — a second point further along',
-    ]
-
     blade_pts: list[list[tuple]] = [[], []]   # blade_pts[k] = list of (row,col)
 
     def on_click(event):

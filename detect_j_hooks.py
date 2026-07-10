@@ -40,8 +40,11 @@ import argparse, json
 from pathlib import Path
 import numpy as np
 import tifffile
-from scipy.ndimage import label, convolve, gaussian_filter
+from scipy.ndimage import label, gaussian_filter
 from skimage.morphology import skeletonize
+
+import electrode_geometry as eg
+from analyze_blade import skeleton_endpoints
 
 
 def load_stack(results_dir, n_max=6000):
@@ -60,13 +63,6 @@ def load_stack(results_dir, n_max=6000):
     return np.stack(frames, 0)
 
 
-def _endpoints(sk):
-    k = np.ones((3, 3), np.uint8); k[1, 1] = 0
-    nb = convolve(sk.astype(np.uint8), k, mode='constant')
-    r, c = np.where(sk & (nb == 1))
-    return np.column_stack([r, c]) if r.size else np.empty((0, 2), int)
-
-
 def detect_edges(stack, seed, core_lo=20, core_hi=400, dens_pct=80):
     """Accumulate arc attachment endpoints (DN>seed, arc-core sized) and split the
     density into the two electrode edge clouds. Returns A,B,A_tip,B_tip,gap_px."""
@@ -82,7 +78,7 @@ def detect_edges(stack, seed, core_lo=20, core_hi=400, dens_pct=80):
         b = lbl == s.argmax()
         if b.sum() < core_lo:
             continue
-        for e in _endpoints(skeletonize(b)):
+        for e in skeleton_endpoints(skeletonize(b)):
             pts.append(e)
     pts = np.array(pts)
     if len(pts) < 50:
@@ -99,12 +95,8 @@ def detect_edges(stack, seed, core_lo=20, core_hi=400, dens_pct=80):
     E = [np.column_stack(np.where(lbl == k)) for k in keep]
     E.sort(key=lambda e: e[:, 1].mean())
     A, B = E
-    rng = np.random.default_rng(0)
-    ai = A[rng.choice(len(A), min(500, len(A)), replace=False)]
-    bi = B[rng.choice(len(B), min(500, len(B)), replace=False)]
-    D = np.linalg.norm(ai[:, None, :] - bi[None], axis=2)
-    i, j = np.unravel_index(D.argmin(), D.shape)
-    return A, B, ai[i], bi[j], float(np.linalg.norm(ai[i] - bi[j]))
+    At, Bt, gap = eg.nearest_facing_tips(A, B, subsample=500, seed=0)
+    return A, B, At, Bt, gap
 
 
 def main():
@@ -132,8 +124,7 @@ def main():
         A, B, At, Bt, gap = detect_edges(stack, args.seed)
 
     gap_mm = gap / args.px_per_mm
-    gap_row = (int(np.floor(0.5 * (At[0] + Bt[0]))) - 2 if args.arc_direction == 'down'
-               else int(np.ceil(0.5 * (At[0] + Bt[0]))) + 2)
+    gap_row = eg.gap_row_from_tips(At[0], Bt[0], args.arc_direction)
     np.savez(rd / 'electrode_edges.npz', A=A, B=B, A_tip=At, B_tip=Bt)
     geom = dict(px_per_mm=args.px_per_mm, gap_row=int(gap_row),
                 min_gap_mm=args.gap_mm, min_gap_px=round(gap, 2),

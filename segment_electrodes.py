@@ -40,6 +40,8 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
+import electrode_geometry as eg
+
 
 # ── guide-image construction ────────────────────────────────────────────────
 
@@ -201,16 +203,14 @@ def paths_to_edges(paths_a, paths_b, step=1.0):
         raise SystemExit('Need a path drawn for BOTH electrodes (got A=%d, B=%d pts).'
                          % (len(A), len(B)))
     # facing tips = closest pair between the two edges
-    D = np.linalg.norm(A[:, None, :] - B[None], axis=2)
-    i, j = np.unravel_index(D.argmin(), D.shape)
-    return A, B, A[i], B[j], float(D[i, j])
+    A_tip, B_tip, gap = eg.nearest_facing_tips(A, B)
+    return A, B, A_tip, B_tip, gap
 
 
 def save_geometry(results_dir, A, B, A_tip, B_tip, gap_px, gap_mm,
                   arc_direction, recording):
     rd = Path(results_dir)
-    gap_row = (int(np.floor(0.5 * (A_tip[0] + B_tip[0]))) - 2 if arc_direction == 'down'
-               else int(np.ceil(0.5 * (A_tip[0] + B_tip[0]))) + 2)
+    gap_row = eg.gap_row_from_tips(A_tip[0], B_tip[0], arc_direction)
     # px/mm is DERIVED from the segmented apex gap and the known electrode gap
     # (3.2 mm) — the only calibration available for the archival data. It is
     # never an external/hardcoded value, so j_geometry.json is self-consistent.
