@@ -33,7 +33,6 @@ import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from scipy.ndimage import label, binary_closing, convolve
-from scipy.signal import find_peaks
 from skimage.morphology import skeletonize, disk
 
 import arc_filter  # single source of truth for flash / validity criteria
@@ -741,7 +740,11 @@ def render_qa_frame(raw, m, frame_idx, fps, px_per_mm, vel_mm_s=np.nan):
     ax.set_facecolor('black')
     ax.imshow(np.power(gn,0.5), cmap='gray', vmin=0, vmax=1, origin='upper')
     if m.get('arc_detected'):
-        b = m.get('_binary', binarize(raw, DEFAULT_CLOSE_RADIUS))
+        # _binary is always present here (QA frames are measured with
+        # keep_overlays=True); fall back lazily instead of recomputing eagerly.
+        b = m.get('_binary')
+        if b is None:
+            b = binarize(raw, DEFAULT_CLOSE_RADIUS)
         ov = np.zeros((*gn.shape,4)); ov[b,0]=1; ov[b,2]=1; ov[b,3]=0.25
         ax.imshow(ov, origin='upper')
         coords = m.get('_skel_coords', np.empty((0,2)))
