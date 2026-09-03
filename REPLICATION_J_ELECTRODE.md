@@ -185,6 +185,12 @@ Written 2026-09-02 from `Desktop\Plasma Arc\J Electrode\GAD PAPER 28JUL26\MainTe
 and `SupportingInformation.tex` — the newest draft in that tree. §6 previously said this
 mapping was recorded nowhere; it now is.
 
+> ⚠ **This table is valid for the 28 JUL draft only, and there are two drafts.**
+> `LATEX_GAD_Paper/` (13 JUL) is what the Status card's Locations table points at, and its
+> figure ORDER is different: `MainText_OpticalvElectrical.pdf` is still in the body there
+> and the velocity nephogram sits later, so **every printed number below 5 shifts**. Check
+> which draft you have before using this mapping, and prefer `GAD PAPER 28JUL26/`.
+
 ### 🔴 Read this before you touch a figure file
 
 **The manuscript numbers its figures in the order they appear, and the file names stopped
