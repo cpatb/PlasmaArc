@@ -173,11 +173,64 @@ Written down because each one produced numbers that looked fine.
   `asymmetry_vs_time.py` run across the per-nozzle recordings (d = 0.4 / 0.8 / 1.2 mm) and
   write to `<root>/Reynolds_comparison/`. They assume every recording has already been
   through §0.
-- **The paper figures.** `npoint_restrike.py`, `nseg_compare.py`, `fig_reset_to_modeA.py`
-  and `velmap_composite_highdpi.py` are the four scripts that write into `paper_figures/`.
-  The mapping from those files to numbered figures in the manuscript is **not recorded
-  anywhere in this repository** and is the one thing here that could not be reconstructed
-  from the code. It needs the manuscript.
+- ~~**The paper figures.**~~ **Covered now — see §7,** written 2026-09-02 against
+  `Desktop\Plasma Arc\J Electrode\GAD PAPER 28JUL26\`, the 28 JUL draft.
 - **The N₂ blade path** — `PIPELINE_GUIDE.md`, and note that its headline runs the *other*
   way from this one: blade transitions are mildly persistent (P(A|A) = 0.53,
   P(B|B) = 0.58), where the J-electrode result is alternation.
+
+## 7. The figures, and the off-by-one that will bite whoever regenerates one
+
+Written 2026-09-02 from `Desktop\Plasma Arc\J Electrode\GAD PAPER 28JUL26\MainText.tex`
+and `SupportingInformation.tex` — the newest draft in that tree. §6 previously said this
+mapping was recorded nowhere; it now is.
+
+### 🔴 Read this before you touch a figure file
+
+**The manuscript numbers its figures in the order they appear, and the file names stopped
+matching at Figure 5.** `MainText.tex` has eight `\includegraphics` in the body but the
+highest-numbered file is `Figure7_Origin.pdf`, because `MainText_VelocityNephogram.pdf`
+was inserted after Figure 4 without renaming anything downstream. There is **no
+`\label`/`\ref` anywhere in the main text** — every cross-reference is a hand-typed
+`\textbf{Figure N}` — so nothing in the build will catch a drift.
+
+| printed as | file in `Figures/` |
+|---|---|
+| Figure 1 | `Figure1_InkScape.pdf` |
+| Figure 2 | `Figure2_Origin.pdf` |
+| Figure 3 | `Figure3_Origin.pdf` |
+| Figure 4 | `Figure4_InkScape.pdf` |
+| **Figure 5** | **`MainText_VelocityNephogram.pdf`** ← not `Figure5_*` |
+| **Figure 6** | **`Figure5_InkScape.pdf`** |
+| **Figure 7** | **`Figure6_Origin.pdf`** |
+| **Figure 8** | **`Figure7_Origin.pdf`** |
+
+Checked, not assumed: every hand-typed reference in the body resolves correctly under this
+table, and the panel letters agree. "Figure 5" is cited twice and both times means the
+velocity map ("segments move more slowly than other portions of the arc as demonstrated
+later in Figure 5"; "increasing Re produces faster moving arcs with broad velocity
+gradients, as demonstrated in the heatmaps and histograms"). "Figure 6 / 6b / 6c" matches
+the (a)(b)(c) panels of the electrical-event-detection figure; "Figure 7a / 7d / 7e"
+matches the (a-c)(d)(e) panels of the arc-formation-interval figure; "Figure 8a / 8b"
+matches the (a)(b) panels of the mean-discharge-time figure. The numbering is internally
+consistent. **Only the file names lie.**
+
+### Which script produces which
+
+| script | writes | lands in |
+|---|---|---|
+| `velmap_composite_highdpi.py` | `fig_velocity_map_montage_noelectrodes_highdpi`, plus `velocity_maps/Re<re>_velmap.{png,pdf,csv}` and `velmap_colorbar.{png,pdf}` — four Re panels on one shared colour scale, apex-anchored | **printed Figure 5** (`MainText_VelocityNephogram.pdf`). ⚠ **Partial:** this script makes the *heatmaps* and the colorbar. The figure's caption and body text also promise **histograms**, which this script does not produce, and the assembled PDF is an external composite. The histogram panel's source is still unidentified — do not assume regenerating this script reproduces the whole figure |
+| `fig_reset_to_modeA.py` | two panels: an arc-tip depth timeline with reset intervals shaded and re-strikes marked by detector and mode, and a peri-reset raster, one row per reset interval (n = 53), showing the first column entirely Mode A | **SI §S1.5**, the evidence behind `SI_ModalProbabilities.pdf` and behind the main text's "the subsequent arc formed immediately after Mode C is always Mode A". ⚠ The SI figure itself is an Origin-drawn composite (Mode-B prevalence vs Re, plus the conditional-probability matrix), **not this script's raw output** — this script is the underlying demonstration, not the published panel |
+| `nseg_compare.py` | `paper_figures/fig_Nsegment_comparison.{png,pdf}` (5-panel N = 10/20/50 comparison) and `nseg_comparison_summary.csv` | **No numbered figure in the 28 JUL draft.** It is the N-sensitivity robustness artifact — the question "does finer arc segmentation change the conclusions?" — and its home is `NSEG_EXPLORATION.md`, not the manuscript. If a reviewer asks whether N = 10 is enough, this is the answer, and it would become a new SI figure |
+| `npoint_restrike.py` | `npoint_leg_event_audit.png` and per-stem `{png,pdf}` | **Not a figure script.** It is the whole-arc (N-point) re-strike *detector*, the complement to the tip-based `qa_restrike.py`; the `.png` it writes is a QA audit. Its outputs feed `nseg_compare.py` and the mode-transition tables, and the mode statistics that reach Figures 7 and 8 depend on which of the two detectors was used |
+
+### The consequence worth stating
+
+Two of the four scripts do **not** produce a published figure, and the two that contribute
+to one each supply only part of it. So "regenerate the paper figures" is not a thing this
+repository can currently do end to end: the assembly step lives in Inkscape and Origin on
+the desktop tree, and the histogram panel of printed Figure 5 has no identified generator.
+**That is the honest state, and it is a bigger gap than the missing mapping was.** Closing
+it would mean either identifying the remaining generators or, better, replacing the
+external assembly with a script — which is the same argument the main repo makes for
+`build_parameter_table.py` over a passing golden test.
