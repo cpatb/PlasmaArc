@@ -24,6 +24,7 @@ def write(tmp_path, name, cines, shape=(256, 256), gap_mm=2.4, **over):
 @pytest.fixture
 def adir(tmp_path, monkeypatch):
     monkeypatch.setattr(rbu, "ANNOT_DIR", tmp_path)
+    monkeypatch.setattr(rbu, "SETUPS_FILE", tmp_path / "setups.json")
     return tmp_path
 
 
@@ -132,6 +133,23 @@ def test_incomplete_annotation_stops(adir):
                                                      gap_line=None)))
     cal, problems, _ = rbu.annotation_calibration(CINE, 256, 256)
     assert cal is None and "incomplete" in problems[0]
+
+
+def test_setups_split_a_condition_at_a_boundary(adir):
+    (adir / "setups.json").write_text(json.dumps({"Argon/45degree_2.4mmGap": {"boundary": [5875, 1],
+                                                                             "before": "s1", "after": "s2"}}))
+    ar = rbu.DATA_ROOT / "Argon" / "45degree_2.4mmGap"
+    early = ar / "Re5875" / "BLADE_ADCB_Argon_Re5875_06mmNozzle_trial1.cine"
+    late = ar / "Re5875" / "BLADE_ADCB_Argon_Re5875_06mmNozzle_trial2.cine"
+    assert rbu.condition_of(early)[-1] == "s1" and rbu.condition_of(late)[-1] == "s2"
+    assert rbu.condition_of(CINE) == ("Air", "45degree_2.4mmGap")          # unlisted condition unchanged
+    # a drawing in setup 1 is never averaged into setup 2
+    write(adir, "rig_a.json", [early])
+    cal, problems, _ = rbu.annotation_calibration(late, 256, 256)
+    assert cal is None and "no hand annotation" in problems[0]
+    write(adir, "rig_b.json", [late], gap_line=[[230.0, 102.0], [230.0, 122.0]])
+    cal, problems, _ = rbu.annotation_calibration(late, 256, 256)
+    assert problems == [] and cal["members"]["n"] == 1 and np.isclose(cal["gap_px"], 20.0)
 
 
 def test_output_goes_to_a_separate_tree():

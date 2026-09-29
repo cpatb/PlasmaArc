@@ -1,0 +1,4 @@
+{
+ "_note": "Conditions whose IMAGE MOVED mid-campaign, split at a (Re, trial) boundary; recordings with (Re, trial) <= boundary belong to 'before'. Argon (2026-09-29): automatic arc-attachment gap ends sit at A col 104-105 / B col 125-126 for Re2250 t1 .. Re5875 t1 (11 recordings) and at 98-99 / 118 for Re5875 t2 .. Re8594 t2 (7), matching the other four gases (~97 / 119); the hand annotations split the same way (7 shifted, 1 not). The gap (~21-22 px) is the same on both sides.",
+ "Argon/45degree_2.4mmGap": {"boundary": [5875, 1], "before": "setup1_shifted_right_6px", "after": "setup2"}
+}

@@ -87,13 +87,37 @@ def out_dir_for(p: Path, tag: str = "", annotated: bool = False) -> Path:
 MEMBER_GAP_FLAG_FRAC = 0.10   # flag (not drop) a member whose gap is > 10 % from the members' median
 
 
+SETUPS_FILE = ANNOT_DIR / "setups.json"
+AUTO_VS_HAND_FLAG_PX = ELEC_TOL_PX  # flag a recording whose automatic attachment ends miss the hand cutoffs by more
+
+
+def _setups():
+    """{"<gas>/<angle folder>": {"boundary": [Re, trial], "before": name, "after": name}, ...}: a condition whose
+    image moved mid-campaign is split into two setups at a (Re, trial) boundary (inclusive on the 'before' side).
+    Recordings are ordered by (Re, trial)."""
+    if not SETUPS_FILE.exists():
+        return {}
+    return {k: v for k, v in json.loads(SETUPS_FILE.read_text(encoding="utf-8")).items() if not k.startswith("_")}
+
+
 def condition_of(path) -> tuple | None:
-    """(gas folder, angle/gap folder) of a recording under DATA_ROOT, e.g. ('Air', '45degree_2.4mmGap')."""
+    """(gas folder, angle/gap folder[, setup]) of a recording under DATA_ROOT, e.g. ('Air', '45degree_2.4mmGap').
+    A condition listed in setups.json gets a third element naming its setup."""
     try:
         parts = Path(path).resolve().relative_to(DATA_ROOT.resolve()).parts
     except ValueError:
         return None
-    return tuple(parts[:2]) if len(parts) >= 3 else None
+    if len(parts) < 3:
+        return None
+    key = tuple(parts[:2])
+    split = _setups().get("/".join(key))
+    if split is None:
+        return key
+    re_m, tr = re.search(r"Re(\d+)", Path(path).stem), re.search(r"trial(\d+)", Path(path).stem)
+    if not (re_m and tr):
+        return key + ("UNASSIGNED (no Re/trial in name)",)
+    before = (int(re_m.group(1)), int(tr.group(1))) <= tuple(split["boundary"])
+    return key + (split["before"] if before else split["after"],)
 
 
 def find_annotations(p: Path):
@@ -292,6 +316,18 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
         meta["calibration"] = cal
         edges = ra.edges_npz(cal["averaged_annotation"], cal_dir / (p.stem + "_edges_annotated.npz"),
                              shape=(src.H, src.W))
+        # independent per-recording check: the automatic arc-attachment gap ends of THIS video against the hand
+        # cutoffs of its setup (a video in the wrong setup, or a camera move, shows here as a multi-px miss)
+        auto_ends = meta["calibration_auto"].get("gap_ends")
+        if auto_ends:
+            a_s = sorted(auto_ends, key=lambda e: e[1])
+            h_s = sorted(cal["gap_ends"], key=lambda e: e[1])
+            miss = [float(np.hypot(*(np.subtract(x, y)))) for x, y in zip(a_s, h_s)]
+            cal["auto_vs_hand_end_px"] = miss
+            if max(miss) > AUTO_VS_HAND_FLAG_PX:
+                flags.append(f"automatic attachment ends miss the hand cutoffs by {miss[0]:.1f} / {miss[1]:.1f} px "
+                             f"(> {AUTO_VS_HAND_FLAG_PX} px): wrong setup or the image moved?")
+        cal["flags"] = flags
         for fl in flags:
             print(f"[flag] {p.name}: {fl}", flush=True)
     else:
