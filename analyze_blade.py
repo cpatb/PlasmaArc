@@ -28,7 +28,8 @@ What it produces (in --out-dir)
 
 import sys, os, argparse, time, warnings, csv
 import numpy as np
-import tifffile
+from cine_frames import open_frames
+from skimage.filters import apply_hysteresis_threshold
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -64,7 +65,9 @@ def binarize(raw_uint8, close_r,
              dark_guard=DEFAULT_DARK_GUARD,
              bright_thresh=DEFAULT_BRIGHT_THRESH,
              min_arc_px=DEFAULT_MIN_ARC_PX,
-             max_arc_px=DEFAULT_MAX_ARC_PX):
+             max_arc_px=DEFAULT_MAX_ARC_PX,
+             low_thresh=None,
+             low_frac=None):
     """
     Fixed-threshold arc detection: pixels above bright_thresh DN are arc
     candidates; morphological closing fills gaps; the largest connected
@@ -89,12 +92,44 @@ def binarize(raw_uint8, close_r,
     bright_thresh : fixed DN threshold; pixels above this count as arc signal
     min_arc_px    : reject mask if total bright area < this (isolated speckle)
     max_arc_px    : reject mask if total bright area > this (noise flood)
+    low_thresh    : if given, HYSTERESIS thresholding (Canny 1986;
+                    skimage.filters.apply_hysteresis_threshold): pixels > low_thresh
+                    connected to a pixel > bright_thresh.  For 12-bit cine input, where
+                    brightness varies along one arc (bright apex/roots, dim legs) and no
+                    single threshold keeps the whole arc.  None = original fixed threshold.
     """
     if int(raw_uint8.max()) < dark_guard:
         return np.zeros(raw_uint8.shape, bool)
-    b = raw_uint8 > bright_thresh
+    if low_thresh is None:
+        b = raw_uint8 > bright_thresh
+    else:
+        # low_frac: the arc edge is where brightness falls to low_frac of THIS frame's peak, never
+        # below the absolute artefact floor low_thresh (a glow halo around a saturated filament
+        # otherwise joins the mask; OVERNIGHT_LOG V-H3 on Argon)
+        lo = low_thresh if low_frac is None else max(low_thresh, low_frac * float(raw_uint8.max()))
+        b = apply_hysteresis_threshold(raw_uint8, lo, max(bright_thresh, lo))
     if b.sum() < min_arc_px:
         return np.zeros(raw_uint8.shape, bool)
+    if low_thresh is not None:
+        # Same closing + largest component, computed on the bounding box of b padded by
+        # close_r + 2.  Closing cannot reach further than close_r from b, and scipy pads with
+        # 0 at the crop edge exactly as it does at the frame edge, so the result is identical
+        # (checked frame-by-frame in test_cine_frames) at ~1/4 of the cost.
+        rr = np.nonzero(b.any(1))[0]; cc = np.nonzero(b.any(0))[0]
+        pad = close_r + 2
+        r0, r1 = max(rr[0] - pad, 0), min(rr[-1] + pad + 1, b.shape[0])
+        c0, c1 = max(cc[0] - pad, 0), min(cc[-1] + pad + 1, b.shape[1])
+        sub = binary_closing(b[r0:r1, c0:c1], structure=disk(close_r))
+        lab, n = label(sub)
+        if n == 0:
+            return np.zeros(raw_uint8.shape, bool)
+        sz = np.bincount(lab.ravel()); sz[0] = 0
+        mask = np.zeros(b.shape, bool)
+        mask[r0:r1, c0:c1] = lab == sz.argmax()
+        area = int(mask.sum())
+        if area < min_arc_px or area > max_arc_px:
+            return np.zeros(raw_uint8.shape, bool)
+        return mask
     b = binary_closing(b, structure=disk(close_r))
     labeled, n = label(b)
     if n == 0:
@@ -498,6 +533,19 @@ def arc_asymmetry(coords, ta, tb, midline, px_per_mm=None):
 
 # ── calibration ────────────────────────────────────────────────────────────────
 
+class FrameWindow:
+    """frames [start, start+count) of a frame source, renumbered from 0."""
+    def __init__(self, src, start, count):
+        if start < 0 or count <= 0 or start + count > src.n:
+            raise ValueError('window [%d,%d) outside [0,%d)' % (start, start + count, src.n))
+        self.src, self.start, self.n = src, int(start), int(count)
+        self.shape, self.defects = src.shape, getattr(src, 'defects', None)
+    def frame(self, i):
+        if not 0 <= i < self.n:
+            raise IndexError(i)
+        return self.src.frame(self.start + i)
+
+
 def calibrate_px_per_mm(tif, n_frames, electrode_gap_mm,
                          close_r, top_fraction, sample_every=20):
     """
@@ -512,7 +560,7 @@ def calibrate_px_per_mm(tif, n_frames, electrode_gap_mm,
     print("  Calibrating scale (sampling every %d frames)..." % sample_every)
     gaps = []
     for i in range(0, n_frames, sample_every):
-        raw = tif.pages[i].asarray()
+        raw = tif.frame(i)
         b   = binarize(raw, close_r)
         if not b.any(): continue
         sk  = skeletonize(b)
@@ -548,7 +596,8 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
                    electrode_edges=None,
                    flash_eff_width=arc_filter.FLASH_EFF_WIDTH,
                    flash_arc_width=arc_filter.FLASH_ARC_WIDTH,
-                   allow_tip_midline_fallback=False):
+                   allow_tip_midline_fallback=False,
+                   low_thresh=None, low_frac=None):
     # electrode_edges (J-hook geometry): (edge_a, edge_b, a_tip, b_tip) where
     # edge_a/edge_b are (M,2) point clouds of the detected electrode edges and
     # a_tip/b_tip are the facing hook tips.  When supplied it OVERRIDES the
@@ -560,7 +609,8 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
     gray_n = (gray-lo)/(hi-lo) if hi>lo else gray
     binary = binarize(raw, close_r,
                       dark_guard=dark_guard, bright_thresh=bright_thresh,
-                      min_arc_px=min_arc_px, max_arc_px=max_arc_px)
+                      min_arc_px=min_arc_px, max_arc_px=max_arc_px,
+                      low_thresh=low_thresh, low_frac=low_frac)
 
     m = dict(arc_detected=False, arc_complete=False, area_px=0,
              arc_length_px=0, arc_length_mm=np.nan,
@@ -814,6 +864,10 @@ def main():
     ap.add_argument('--out-dir',         default=None,
                     help="Output directory (default: <tiff_name>_results/)")
     ap.add_argument('--fps',             type=float, default=DEFAULT_FPS)
+    ap.add_argument('--frame-start',     type=int,   default=0,
+                    help='first cine frame of a chunk (with --frame-count)')
+    ap.add_argument('--frame-count',     type=int,   default=None,
+                    help='analyse only this many frames from --frame-start (local numbering)')
     ap.add_argument('--close-radius',    type=int,   default=DEFAULT_CLOSE_RADIUS,
                     help="Morphological closing radius in px (default 3)")
     ap.add_argument('--electrode-gap',   type=float, default=DEFAULT_ELECTRODE_GAP,
@@ -822,10 +876,17 @@ def main():
                     help="Spatial scale in px/mm (default %.4f, ground-truth "
                          "22px=2.4mm hand measurement; pass 0 to auto-calibrate)"
                          % DEFAULT_PX_PER_MM)
-    ap.add_argument('--dark-guard',      type=int,   default=DEFAULT_DARK_GUARD,
+    ap.add_argument('--dark-guard',      type=float,   default=DEFAULT_DARK_GUARD,
                     help="Skip frames whose max pixel is below this DN (default %d)" %
                          DEFAULT_DARK_GUARD)
-    ap.add_argument('--bright-thresh',  type=int,   default=DEFAULT_BRIGHT_THRESH,
+    ap.add_argument('--background',     default=None,
+                    help='.npy per-pixel background subtracted from every cine frame (cine_frames.measure_background)')
+    ap.add_argument('--low-frac',       type=float,   default=None,
+                    help='hysteresis low threshold is max(--low-thresh, low_frac * frame max)')
+    ap.add_argument('--low-thresh',     type=float,   default=None,
+                    help='hysteresis low threshold (DN); with it --bright-thresh is the seed '
+                         '(high) threshold. Default None = single fixed threshold.')
+    ap.add_argument('--bright-thresh',  type=float,   default=DEFAULT_BRIGHT_THRESH,
                     help="Fixed DN threshold: pixels above this are arc candidates "
                          "(default %d; replaces adaptive Otsu)" % DEFAULT_BRIGHT_THRESH)
     ap.add_argument('--min-arc-px',      type=int,   default=DEFAULT_MIN_ARC_PX,
@@ -947,9 +1008,20 @@ def main():
     print("Input  : %s" % tiff_path)
     print("Output : %s" % out_dir)
 
-    with tifffile.TiffFile(tiff_path) as tif:
-        n_frames = len(tif.pages)
-        H, W     = tif.pages[0].asarray().shape
+    tif = open_frames(tiff_path, background=args.background)   # .cine: 12-bit, defect-corrected, header frame count
+    if hasattr(tif, 'fps') and abs(tif.fps - fps) > 0.5:
+        raise SystemExit('ERROR: --fps %.0f disagrees with the cine header %.0f' % (fps, tif.fps))
+    if args.frame_count is not None:
+        # a chunk of a cine: local frame i = cine frame frame_start + i, exactly as
+        # a TIFF chunk would be, so run_*.merge_csvs offsets it back to global
+        tif = FrameWindow(tif, args.frame_start, args.frame_count)
+        print("Window : cine frames [%d, %d)" % (tif.start, tif.start + tif.n))
+    if True:
+        n_frames = tif.n
+        H, W     = tif.shape
+        if getattr(tif, 'defects', None) is not None:
+            print("Defects: %d stuck px replaced by neighbour median (values %s)" % (
+                  tif.defects.n, tif.defects.values))
         print("Frames : %d  |  Resolution : %d×%d  |  FPS : %.0f" % (
               n_frames, H, W, fps))
 
@@ -963,7 +1035,7 @@ def main():
                 tif, n_frames, args.electrode_gap,
                 close_r, top_frac)
 
-        print("Threshold : fixed DN>%d  |  dark-guard DN<%d  |  arc area %d–%d px" % (
+        print("Threshold : fixed DN>%g  |  dark-guard DN<%g  |  arc area %d–%d px" % (
               bright_thresh, dark_guard, min_arc_px, max_arc_px))
         print("Direction : arc front is %s" % (
               "BOTTOMMOST pixel (reactor upright)" if arc_direction == 'down'
@@ -978,7 +1050,7 @@ def main():
 
         t0 = time.time()
         for i in range(n_frames):
-            raw = tif.pages[i].asarray()
+            raw = tif.frame(i)
             keep = (i % qa_int == 0)
             m    = measure_frame(raw, close_r, px_per_mm,
                                   top_frac, keep_overlays=keep,
@@ -994,7 +1066,8 @@ def main():
                                   seg_margin_px=args.segment_margin_px,
                                   electrode_edges=electrode_edges,
                                   flash_eff_width=args.flash_eff_width,
-                                  flash_arc_width=args.flash_arc_width)
+                                  flash_arc_width=args.flash_arc_width,
+                                  low_thresh=args.low_thresh, low_frac=args.low_frac)
             meas_all[i] = m
             if m['arc_detected']:
                 tip_rows[i] = m['arc_tip_row']
@@ -1069,7 +1142,8 @@ def main():
                                   seg_margin_px=args.segment_margin_px,
                                   electrode_edges=electrode_edges,
                                   flash_eff_width=args.flash_eff_width,
-                                  flash_arc_width=args.flash_arc_width)
+                                  flash_arc_width=args.flash_arc_width,
+                                  low_thresh=args.low_thresh, low_frac=args.low_frac)
             fig  = render_qa_frame(raw_qa, m_qa, fi, fps, px_per_mm, tip_vels[fi])
             fig.savefig(os.path.join(qa_dir,"qa_%06d.png"%fi),
                         dpi=120, bbox_inches='tight', facecolor='black')

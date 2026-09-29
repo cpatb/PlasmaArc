@@ -234,12 +234,17 @@ def main():
     ap.add_argument('--csv', help='measurements_all_events.csv (has local_vel_ms) [build mode]')
     ap.add_argument('--tiff', help='single chunk TIFF')
     ap.add_argument('--tiff-dir', help='directory of ordered chunk TIFFs (multi-chunk)')
+    ap.add_argument('--cine', help='read frames straight from this .cine (global frame = cine frame)')
+    ap.add_argument('--dark-guard', type=float, default=None, help='binarize dark guard (12-bit value for --cine)')
+    ap.add_argument('--background', default=None, help='.npy background subtracted from cine frames')
+    ap.add_argument('--low-thresh', type=float, default=None, help='hysteresis low threshold (with --thresh as high)')
+    ap.add_argument('--low-frac', type=float, default=None, help='low threshold floor as a fraction of frame max')
     ap.add_argument('--frames-per-tiff', type=int, default=10000,
                     help='chunk size used at conversion (for global-frame->page mapping)')
     ap.add_argument('--out-dir', help='output dir [build mode]')
     ap.add_argument('--px-per-mm', type=float, default=8.8)
     ap.add_argument('--fps', type=float, default=FPS_DEFAULT)
-    ap.add_argument('--thresh', type=int, default=100,
+    ap.add_argument('--thresh', type=float, default=100,
                     help='DN threshold for RE-binarising frames to paint velocity onto. '
                          'MUST match the analyze stage (run_j_co2 passes the per-recording '
                          'bright_thresh) or the wrong pixels are painted / the high-flow '
@@ -287,7 +292,7 @@ def main():
     if not args.csv or not args.out_dir:
         raise SystemExit('build mode requires --csv and --out-dir '
                          '(or use --compare with --down-map/--up-map).')
-    import tifffile                       # lazy: only the build path reads TIFFs
+    from cine_frames import open_frames   # lazy: only the build path reads frames
     from analyze_blade import binarize   # lazy: only the build path needs the CV stack
 
     out_dir = Path(args.out_dir); out_dir.mkdir(parents=True, exist_ok=True)
@@ -315,24 +320,30 @@ def main():
         chunks = [(t, k * args.frames_per_tiff) for k, t in enumerate(tiffs)]
     elif args.tiff:
         chunks = [(Path(args.tiff), args.frame_offset)]
+    elif args.cine:
+        chunks = [(Path(args.cine), 0)]
     else:
-        raise SystemExit('Provide --tiff or --tiff-dir.')
+        raise SystemExit('Provide --tiff, --tiff-dir or --cine.')
 
     vel_sum = vel_cnt = None
     used = 0
     for tpath, offset in chunks:
-        with tifffile.TiffFile(str(tpath)) as t:
-            n = len(t.pages)
-            H, W = t.pages[0].asarray().shape
+        t = open_frames(str(tpath), background=args.background)
+        if True:
+            n = t.n
+            H, W = t.shape
             if vel_sum is None:
                 vel_sum = np.zeros((H, W)); vel_cnt = np.zeros((H, W))
             for page in range(n):
                 v = vel_by_global.get(page + offset)
                 if v is None:
                     continue
-                raw = t.pages[page].asarray()
+                raw = t.frame(page)
+                kw = {} if args.dark_guard is None else {'dark_guard': args.dark_guard}
+                kw['low_thresh'] = args.low_thresh
+                kw['low_frac'] = args.low_frac
                 b = binarize(raw, args.close_radius, bright_thresh=args.thresh,
-                             min_arc_px=args.min_arc_px, max_arc_px=args.max_arc_px)
+                             min_arc_px=args.min_arc_px, max_arc_px=args.max_arc_px, **kw)
                 if b.any():
                     vel_sum[b] += v; vel_cnt[b] += 1
                     used += 1

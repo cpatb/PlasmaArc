@@ -36,12 +36,12 @@ Usage:
 import argparse
 from pathlib import Path
 import numpy as np
-import tifffile
 from skimage.morphology import skeletonize
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from analyze_blade import binarize, skeleton_endpoints, DEFAULT_DARK_GUARD
+from cine_frames import open_frames
 
 
 def tls_line(pts, n_iter=4, k=2.5):
@@ -77,7 +77,7 @@ def main():
     ap = argparse.ArgumentParser(description='Automatic blade-line detection')
     ap.add_argument('tiff')
     ap.add_argument('--arc-direction', choices=['up', 'down'], default='up')
-    ap.add_argument('--thresh', type=int, default=100)
+    ap.add_argument('--thresh', type=float, default=100)
     ap.add_argument('--close-radius', type=int, default=3)
     ap.add_argument('--min-arc-px', type=int, default=22)
     ap.add_argument('--px-per-mm', type=float, default=8.8)
@@ -86,19 +86,26 @@ def main():
     ap.add_argument('--min-gap-px', type=float, default=15.0,
                     help='Minimum foot separation for a clean arch')
     ap.add_argument('--max-frames', type=int, default=2000)
+    ap.add_argument('--dark-guard', type=float, default=None,
+                    help='frame max below this is skipped (default: analyze_blade DEFAULT_DARK_GUARD, '
+                         'an 8-bit value; pass the 12-bit equivalent for .cine input)')
+    ap.add_argument('--json', default=None,
+                    help='write gap/angle/feet counts here (machine-readable calibration record)')
     ap.add_argument('--out', required=True)
     ap.add_argument('--qa', default=None, help='QA overlay PNG (default: alongside --out)')
     args = ap.parse_args()
 
     left_feet, right_feet = [], []
-    with tifffile.TiffFile(args.tiff) as t:
-        n = min(len(t.pages), args.max_frames)
-        H, W = t.pages[0].asarray().shape
+    src = open_frames(args.tiff)   # .cine (12-bit, defect-corrected) or TIFF
+    dark_guard = DEFAULT_DARK_GUARD if args.dark_guard is None else args.dark_guard
+    if True:
+        n = min(src.n, args.max_frames)
+        H, W = src.shape
         occ = np.zeros((H, W))
         endpts = []
         for i in range(n):
-            raw = t.pages[i].asarray()
-            b = binarize(raw, args.close_radius, dark_guard=DEFAULT_DARK_GUARD,
+            raw = src.frame(i)
+            b = binarize(raw, args.close_radius, dark_guard=dark_guard,
                          bright_thresh=args.thresh, min_arc_px=args.min_arc_px)
             if not b.any():
                 continue
@@ -167,6 +174,16 @@ def main():
     out.parent.mkdir(parents=True, exist_ok=True)
     np.save(str(out), blade_lines)
     print("saved %s  shape %s" % (out, blade_lines.shape))
+    if args.json:
+        import json
+        i_min = int(np.argmin(gap_px))
+        json.dump(dict(source=str(args.tiff), frames_scanned=int(n), clean_arch_frames=int(len(left)),
+                       inliers_A=int(nA), inliers_B=int(nB), base_row=base_row,
+                       full_opening_angle_deg=float(ang), foot_row_min=float(rmin), foot_row_max=float(rmax),
+                       gap_px_min=float(gap_px[i_min]), gap_px_min_row=float(rows[i_min]),
+                       gap_px_max=float(gap_px.max()), thresh=args.thresh, dark_guard=dark_guard),
+                  open(args.json, 'w'), indent=1)
+        print("saved %s" % args.json)
 
     qa = args.qa or (str(out.with_suffix('')) + '_qa.png')
     fig, ax = plt.subplots(figsize=(6, 6), facecolor='black')

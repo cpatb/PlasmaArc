@@ -59,6 +59,20 @@ FPS_DEFAULT = 200_000
 MODE_COLOR = {'A': '#1565C0', 'B': '#C62828'}
 
 
+class CineSource:
+    """FrameSource interface over a .cine: global frame index = cine frame index."""
+    def __init__(self, path, background=None):
+        from cine_frames import open_cine
+        self.src = open_cine(path, background=background)
+        self.H, self.W = self.src.shape
+        self.tiffs = [path]
+    def get(self, gframe):
+        g = int(gframe)
+        return self.src.frame(g) if 0 <= g < self.src.n else None
+    def close(self):
+        pass
+
+
 class FrameSource:
     """Fetch a raw frame by GLOBAL frame index from a single TIFF or a directory
     of ordered chunk TIFFs."""
@@ -168,6 +182,11 @@ def main():
     ap.add_argument('--csv', required=True)
     ap.add_argument('--tiff', help='single chunk TIFF for montage')
     ap.add_argument('--tiff-dir', help='directory of ordered chunk TIFFs (multi-chunk montage)')
+    ap.add_argument('--cine', help='read montage frames straight from this .cine (global frame = cine frame)')
+    ap.add_argument('--dark-guard', type=float, default=None, help='binarize dark guard (12-bit value for --cine)')
+    ap.add_argument('--background', default=None, help='.npy background subtracted from cine frames')
+    ap.add_argument('--low-thresh', type=float, default=None, help='hysteresis low threshold (with --thresh as high)')
+    ap.add_argument('--low-frac', type=float, default=None, help='low threshold floor as a fraction of frame max')
     ap.add_argument('--frames-per-tiff', type=int, default=None,
                     help='chunk size (required with --tiff-dir for global-frame->page)')
     ap.add_argument('--arc-direction', choices=['up', 'down'], required=True)
@@ -180,7 +199,7 @@ def main():
                     help='Image height in px, for the up-direction apex flip.')
     ap.add_argument('--px-per-mm', type=float, default=8.8)
     ap.add_argument('--fps', type=float, default=FPS_DEFAULT)
-    ap.add_argument('--thresh', type=int, default=100, help='binarization DN threshold')
+    ap.add_argument('--thresh', type=float, default=100, help='binarization DN threshold')
     ap.add_argument('--method', choices=['abs', 'rel'], default='abs')
     ap.add_argument('--threshold', type=float, default=0.10)
     ap.add_argument('--rel-threshold', type=float, default=0.70)
@@ -295,8 +314,9 @@ def main():
     print('Wrote %s' % summary)
 
     # ---- figure ----
-    src = FrameSource(tiff=args.tiff, tiff_dir=args.tiff_dir,
-                      frames_per_tiff=args.frames_per_tiff, frame_offset=args.frame_offset)
+    src = (CineSource(args.cine, args.background) if args.cine else
+           FrameSource(tiff=args.tiff, tiff_dir=args.tiff_dir,
+                       frames_per_tiff=args.frames_per_tiff, frame_offset=args.frame_offset))
     H, W = src.H, src.W
 
     fig = plt.figure(figsize=(16, 9), facecolor='white')
@@ -347,7 +367,8 @@ def main():
         raw = src.get(e.frame)
         if raw is not None:
             ax.imshow(np.power(raw / max(raw.max(), 1), 0.45), cmap='inferno', vmin=0, vmax=1)
-            b = binarize(raw, 3, bright_thresh=args.thresh)
+            b = (binarize(raw, 3, bright_thresh=args.thresh, low_thresh=args.low_thresh, low_frac=args.low_frac) if args.dark_guard is None else
+                 binarize(raw, 3, bright_thresh=args.thresh, dark_guard=args.dark_guard, low_thresh=args.low_thresh, low_frac=args.low_frac))
             if b.any():
                 ax.contour(b, levels=[0.5], colors='cyan', linewidths=0.5)
             ax.axhline(raw_apex, color='yellow', lw=1, ls='--')

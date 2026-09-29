@@ -1,0 +1,10 @@
+E:\BladeReactor_Upwards\Air\45degree_2.4mmGap\Re2250\BLADE_ADCB_Air_Re2250_06mmNozzle_trial1.cine
+E:\BladeReactor_Upwards\Air\45degree_2.4mmGap\Re8594\BLADE_ADCB_Air_Re8594_06mmNozzle_trial1.cine
+E:\BladeReactor_Upwards\Ar-Air(1_1)\45degree_2.4mmGap\Re2250\BLADE_ADCB_(Argon_Air)_(1-1)_Re2250_06mmNozzle_trial1.cine
+E:\BladeReactor_Upwards\Ar-Air(1_1)\45degree_2.4mmGap\Re8594\BLADE_ADCB_(Argon_Air)_(1-1)_Re8594_06mmNozzle_trial1.cine
+E:\BladeReactor_Upwards\Ar-CO2(1_1)\45degree_2.4mmGap\Re3156\BLADE_ADCB_ArgonCO2_1-1_Re3156_06mmNozzle_trial1.cine
+E:\BladeReactor_Upwards\Ar-CO2(1_1)\45degree_2.4mmGap\Re8594\BLADE_ADCB_ArgonCO2_1-1_Re8594_06mmNozzle_trial1.cine
+E:\BladeReactor_Upwards\Argon\45degree_2.4mmGap\Re2250\BLADE_ADCB_Argon_Re2250_06mmNozzle_trial1.cine
+E:\BladeReactor_Upwards\Argon\45degree_2.4mmGap\Re8594\BLADE_ADCB_Argon_Re8594_06mmNozzle_trial1.cine
+E:\BladeReactor_Upwards\CO2\45degree_2.4mmGap\Re3156\BLADE_ADCB_CO2_Re3156_06mmNozzle_trial1.cine
+E:\BladeReactor_Upwards\CO2\45degree_2.4mmGap\Re8594\BLADE_ADCB_CO2_Re8594_06mmNozzle_trial1.cine
