@@ -128,6 +128,8 @@ def main(cine, out, T, T_low=None, background=None, low_frac=None):
         rel = P - o
         return np.abs(rel[:, 0] * d[1] - rel[:, 1] * d[0])
 
+    Mc = 0.5 * (tipL[1] + tipR[1])      # column of the RANSAC tips' midpoint
+
     def dense_sided(points):
         u, c = np.unique(np.round(points).astype(int), axis=0, return_counts=True)
         u = u[c >= thr].astype(float)
@@ -135,7 +137,12 @@ def main(cine, out, T, T_low=None, background=None, low_frac=None):
         near = np.minimum(dLd, dRd) <= EDGE_LINE_TOL_PX            # drop stray feet far from both blades
         sided = np.abs(dLd - dRd) >= EDGE_SIDE_MARGIN_PX           # drop mid-gap points no line owns
         ok = near & sided
-        return u[ok & (dLd < dRd)], u[ok & (dRd < dLd)], u[~ok].tolist()
+        # v6 (04:10): A must lie LEFT and B RIGHT of the vertical through the RANSAC tips' midpoint.
+        # Argon Re3156 t2: a left line tilted to 60.7 deg ran under the right blade, feet below the
+        # right tip were "nearer" to it, and the gap came out 8.2 px (A (240,127) vs B (232,125)).
+        left = u[:, 1] < Mc - 1
+        right = u[:, 1] > Mc + 1
+        return u[ok & (dLd < dRd) & left], u[ok & (dRd < dLd) & right], u[~(ok & (left | right))].tolist()
 
     # gap = closest approach of the dense FOOT-EXTREMITY clouds (arc feet sit on the metal; their
     # minimum separation across the gap is the measurable minimum gap in projection)
