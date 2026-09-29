@@ -30,7 +30,9 @@ Usage:
 """
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -52,7 +54,9 @@ ANNOT_DIR = HERE / "rig_annotations"   # rig_annotate.py (napari) saves one JSON
 
 GAP_MM = 2.4                    # folder name "45degree_2.4mmGap": minimum electrode gap (trusted)
 ARC_DIRECTION = "up"            # upward rig; pycine orientation has electrodes at the bottom
-CHUNK = 10_000                  # frames per analysis window
+CHUNK_MAX = 10_000              # frames per analysis window at most; a run uses ceil(n / workers) so every
+                                # worker gets one window (only arc_tip_vel_mm_s, a diagnostic-only column,
+                                # is NaN at window edges, so the split moves no downstream number)
 LOW_K, HIGH_K = 1.2, 4.0        # DECISION 23:48 / AMENDMENT 3 (OVERNIGHT_LOG)
 LOW_FRAC = 0.05                 # AMENDMENT 4: low threshold >= 5 % of the frame peak (Argon glow, V-H3)
 MIN_ARC_PX = 22                 # speckle floor (px^2); tiny next to any arc mask (~100-900 px^2)
@@ -66,6 +70,8 @@ HAND_ELEC_TOL_PX = 7
 CLOSE_R = 3
 FREQ_MAX_HZ = 20_000            # fourier: do not discard the kHz band (default 500 Hz)
 LOCAL_VEL_N = 10
+NPOINT_N = 10                   # the 10-segment whole-arc reconstruction (the J suite's N_HEADLINE)
+NPOINT_METHOD = "skeleton route foot A -> foot B, resample_arc"   # change => every run and chunk is redone
 GAP_PX_PLAUSIBLE = (12.0, 45.0)  # outside this the calibration is reported as failed
 ANGLE_TOL_DEG = 5.0             # full opening vs 2 x folder angle: flag beyond this
 KNOWN_LATTICE = (list(range(1, 122, 8)), list(range(11, 124, 16)))
@@ -228,24 +234,58 @@ def run(cmd, log):
     return time.time() - t
 
 
+def up_to_date(p: Path, tag="", annotated=False):
+    """The DONE record of p if it needs no re-run (same annotations, tolerance and 10-segment outputs), else None."""
+    done = out_dir_for(p, tag, annotated) / "DONE.json"
+    if not done.exists():
+        return None
+    prev = json.loads(done.read_text())
+    if prev.get("status") == "NO_GLIDING":
+        return prev
+    if prev.get("npoint_n") != NPOINT_N or prev.get("npoint_method") != NPOINT_METHOD:
+        return None
+    if not annotated:
+        return prev
+    a_paths, a_prob = find_annotations(p)
+    cur_md5 = annotation_md5(a_paths) if not a_prob else None
+    same_tol = prev.get("elec_tol_px", ELEC_TOL_PX) == HAND_ELEC_TOL_PX
+    return prev if same_tol and prev.get("calibration", {}).get("annotation_md5") == cur_md5 else None
+
+
+def local_copy(src: Path, cache: Path) -> Path:
+    """Byte-for-byte copy of a cine onto the local disk (sequential read of the USB drive, then fast random
+    access). Written to a .part name and renamed only after the size check, so a half copy is never read."""
+    cache.mkdir(parents=True, exist_ok=True)
+    dst = cache / src.name
+    if dst.exists() and dst.stat().st_size == src.stat().st_size:
+        return dst
+    part = cache / (src.name + ".part")
+    shutil.copyfile(src, part)
+    if part.stat().st_size != src.stat().st_size:
+        raise RuntimeError(f"copy of {src.name} is {part.stat().st_size} bytes, source {src.stat().st_size}")
+    os.replace(part, dst)
+    return dst
+
+
 def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, tag="", figures=False,
-            low_frac=LOW_FRAC, annotated=False):
+            low_frac=LOW_FRAC, annotated=False, read_path: Path | None = None):
+    """p names the recording (condition, output dir, annotations); read_path, if given, is a byte-identical
+    local copy of it that every stage READS (the USB drive seeks when 7+ workers read one cine at once)."""
+    rp = Path(read_path) if read_path is not None else p
     od = out_dir_for(p, tag, annotated)
     od.mkdir(parents=True, exist_ok=True)
     log = od / "pipeline.log"
     done = od / "DONE.json"
-    if done.exists() and not force:
-        prev = json.loads(done.read_text())
-        a_paths, a_prob = find_annotations(p) if annotated else ([], ["n/a"])
-        cur_md5 = annotation_md5(a_paths) if not a_prob else None
-        same_tol = prev.get("elec_tol_px", ELEC_TOL_PX) == (HAND_ELEC_TOL_PX if annotated else ELEC_TOL_PX)
-        if prev.get("status") == "NO_GLIDING" or not annotated or (
-                same_tol and prev.get("calibration", {}).get("annotation_md5") == cur_md5):
+    if not force:
+        prev = up_to_date(p, tag, annotated)
+        if prev is not None:
             print(f"[skip] {p.name} (DONE)", flush=True)
             return prev
-        print(f"[redo] {p.name}: its condition's hand annotations changed since the last run", flush=True)
+        if done.exists():
+            print(f"[redo] {p.name}: its hand annotations, tolerance or 10-segment outputs are out of date",
+                  flush=True)
     t0 = time.time()
-    meta = dict(cine=str(p), out=str(od), tag=tag, **parse_condition(p),
+    meta = dict(cine=str(p), read_from=str(rp), out=str(od), tag=tag, **parse_condition(p),
                 started=time.strftime("%Y-%m-%d %H:%M:%S"),
                 git=subprocess.run(["git", "rev-parse", "HEAD"], cwd=HERE, capture_output=True,
                                    text=True).stdout.strip(),
@@ -258,7 +298,7 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
         mpath.write_text(json.dumps(meta, indent=1, default=float))
 
     # 0. source + defects
-    src = cf.open_cine(str(p))
+    src = cf.open_cine(str(rp))
     rows, cols = src.defects.lattice_signature()
     meta.update(n_frames=src.n, fps=src.fps, W=src.W, H=src.H, shutter_ns=src.shutter_ns,
                 real_bpp=src.real_bpp, camera_serial=src.serial,
@@ -293,7 +333,7 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
 
     # 2. calibration + edge clouds (same detector)
     cal_dir = od / "calibration"
-    gap_calibration.main(str(p), str(cal_dir), T_high, T_low, str(bgp), low_frac)
+    gap_calibration.main(str(rp), str(cal_dir), T_high, T_low, str(bgp), low_frac)
     cal = json.loads((cal_dir / (p.stem + "_gap.json")).read_text())
     meta["calibration"] = cal
     meta["regime"] = dict(frames_scanned=cal.get("frames_scanned"), detected=cal.get("detected"),
@@ -351,28 +391,32 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
     save()
 
     # 3. analyze windows in parallel
-    starts = list(range(0, src.n, CHUNK))
+    chunk = min(CHUNK_MAX, -(-src.n // max(workers, 1)))
+    starts = list(range(0, src.n, chunk))
+    meta["chunk_frames"] = chunk
     chunk_dirs = [od / "chunks" / f"c{k:02d}" for k in range(len(starts))]
 
     import hashlib
     elec_tol = HAND_ELEC_TOL_PX if annotated else ELEC_TOL_PX
     meta["elec_tol_px"] = elec_tol
     stamp = dict(git=meta["git"], T_low=round(T_low, 6), T_high=round(T_high, 6), low_frac=low_frac,
-                 elec_tol_px=elec_tol,
+                 elec_tol_px=elec_tol, npoint_n=NPOINT_N, npoint_method=NPOINT_METHOD,
                  px_per_mm=round(pxmm, 6), edges_md5=hashlib.md5(edges.read_bytes()).hexdigest(),
                  background_md5=hashlib.md5(bgp.read_bytes()).hexdigest())
 
     def one(k):
         a = starts[k]
-        cnt = min(CHUNK, src.n - a)
+        cnt = min(chunk, src.n - a)
         cd = chunk_dirs[k]
         sp = cd / "chunk_params.json"
-        if (cd / "measurements.csv").exists() and not force and sp.exists() and json.loads(sp.read_text()) == stamp:
+        kstamp = dict(stamp, frame_start=a, frame_count=cnt)
+        if (cd / "measurements.csv").exists() and not force and sp.exists() and json.loads(sp.read_text()) == kstamp:
             return 0.0      # reuse ONLY a chunk made with identical code, thresholds and calibration
         (cd / "measurements.csv").unlink(missing_ok=True)
         cd.mkdir(parents=True, exist_ok=True)
-        sp.write_text(json.dumps(stamp))
-        return run([HERE / "analyze_blade.py", p, "--out-dir", cd, "--fps", f"{src.fps:.0f}",
+        sp.write_text(json.dumps(kstamp))
+        return run([HERE / "analyze_blade.py", rp, "--out-dir", cd, "--fps", f"{src.fps:.0f}",
+                    "--npoint-n", NPOINT_N, "--no-figures",
                     "--frame-start", a, "--frame-count", cnt, "--px-per-mm", f"{pxmm:.5f}",
                     "--background", bgp, "--low-thresh", f"{T_low:.3f}", "--low-frac", low_frac,
                     "--bright-thresh", f"{T_high:.3f}", "--dark-guard", f"{T_high:.3f}",
@@ -391,7 +435,7 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
     dfs = []
     for k, cd in enumerate(chunk_dirs):
         df = pd.read_csv(cd / "measurements.csv")
-        expect = min(CHUNK, src.n - starts[k])
+        expect = min(chunk, src.n - starts[k])
         if len(df) != expect:
             raise RuntimeError(f"chunk {k}: {len(df)} rows, expected {expect}")
         df["file"] = p.stem
@@ -405,6 +449,21 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
     for stale in ("measurements_raw.csv", "POST.json"):
         (od / stale).unlink(missing_ok=True)      # a new merged CSV invalidates any earlier post-stage
     merged.to_csv(mcsv, index=False)
+    fr_np, pt_np = [], []
+    for k, cd in enumerate(chunk_dirs):
+        z = np.load(cd / "npoint_xy.npz")
+        if int(z["n"]) != NPOINT_N or int(z["H"]) != src.H:
+            raise RuntimeError(f"chunk {k}: npoint_xy.npz n={int(z['n'])} H={int(z['H'])}")
+        fr_np.append(z["frames"] + starts[k])
+        pt_np.append(z["pts"])
+    fr_np = np.concatenate(fr_np)
+    if not np.all(np.diff(fr_np) > 0):
+        raise RuntimeError("merged npoint frames not strictly increasing")
+    det_frames = merged.loc[merged["arc_detected"] == 1, "frame"].to_numpy()
+    if not np.isin(fr_np, det_frames).all():
+        raise RuntimeError("npoint frames include a frame the CSV does not call detected")
+    np.savez(od / "npoint_xy.npz", n=NPOINT_N, H=src.H, frames=fr_np, pts=np.concatenate(pt_np))
+    meta["npoint_frames"] = dict(with_points=int(len(fr_np)), detected=int(len(det_frames)))
     meta["frames"] = dict(total=int(len(merged)), arc_detected=int((merged["arc_detected"] == 1).sum()),
                           arc_complete=int((merged["arc_complete"] == 1).sum()),
                           flash_flagged=int((merged["is_flash"] == 1).sum()))
@@ -416,7 +475,7 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
          "--local-vel-n", LOCAL_VEL_N], log)
     ev = od / "measurements_all_events.csv"
     if ev.exists():
-        run([HERE / "qa_restrike.py", "--csv", ev, "--cine", p, "--background", bgp,
+        run([HERE / "qa_restrike.py", "--csv", ev, "--cine", rp, "--background", bgp,
              "--arc-direction", ARC_DIRECTION, "--px-per-mm", f"{pxmm:.5f}", "--fps", fps,
              "--thresh", f"{T_high:.3f}", "--low-thresh", f"{T_low:.3f}", "--low-frac", low_frac,
              "--dark-guard", f"{T_high:.3f}", "--method", "abs", "--threshold", "0.10", "--ext-prominence-frac", "0.10",
@@ -424,10 +483,15 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
              "--out", od / "qa_restrike.png"], log)
         run([HERE / "fourier_analysis.py", ev, od, "--px-per-mm", f"{pxmm:.5f}", "--fps", fps,
              "--freq-max", FREQ_MAX_HZ], log)
+        # 10-segment whole-arc analysis (npoint re-strikes, per-segment velocities) on this run's points
+        run([HERE / "npoint_blade.py", od, "--n", NPOINT_N], log)
+        meta["npoint_n"] = NPOINT_N
+        meta["npoint_method"] = NPOINT_METHOD
+        meta["npoint_summary"] = json.loads((od / "npoint_summary.json").read_text())
     if figures and ev.exists():
         # figure-only stages (build_velocity_map re-reads and re-binarises the whole cine on one
         # thread, ~15 min/file): off in the batch, run afterwards for chosen files
-        run([HERE / "build_velocity_map.py", "--csv", ev, "--cine", p, "--background", bgp,
+        run([HERE / "build_velocity_map.py", "--csv", ev, "--cine", rp, "--background", bgp,
              "--out-dir", od, "--px-per-mm", f"{pxmm:.5f}", "--fps", fps,
              "--thresh", f"{T_high:.3f}", "--low-thresh", f"{T_low:.3f}", "--low-frac", low_frac,
              "--dark-guard", f"{T_high:.3f}", "--min-arc-px", MIN_ARC_PX, "--max-arc-px", 10**9], log)
@@ -461,6 +525,9 @@ def main():
     ap.add_argument("--annotations", action="store_true",
                     help="use the hand-drawn gap and electrode edges from rig_annotations\\ (rig_annotate.py); a "
                          "recording without one is STOPPED. Output goes to runs_annotated\\")
+    ap.add_argument("--cache-dir", default=None,
+                    help="copy each cine to this LOCAL directory first (next one prefetched while the current "
+                         "runs) and read it from there; one recording at a time; copies deleted after use")
     ap.add_argument("--check-annotations", action="store_true",
                     help="list every recording's hand annotation (px/mm, gap line vs edges, problems); run nothing")
     a = ap.parse_args()
@@ -504,13 +571,44 @@ def main():
            else f"lo{a.low_scale:g}_hi{a.high_scale:g}_fr{a.low_frac:g}")
     fails = []
 
-    def job(f):
+    def job(f, read_path=None):
         try:
             process(f, a.workers, force=a.force, low_scale=a.low_scale, high_scale=a.high_scale, tag=tag,
-                    figures=a.figures, low_frac=a.low_frac, annotated=a.annotations)
+                    figures=a.figures, low_frac=a.low_frac, annotated=a.annotations, read_path=read_path)
         except Exception as e:  # recorded, the batch continues
             print(f"[FAIL] {f.name}: {e}", flush=True)
             fails.append((str(f), str(e)))
+
+    if a.cache_dir:
+        # --files-parallel recordings at a time, each read from a local copy. Copies are made ONE AT A TIME (a
+        # lock: the USB drive is fast only when read sequentially), so one recording copies while the others
+        # compute. Only recordings that will actually run are copied; each copy is deleted after its run (only
+        # files local_copy created, inside the cache dir).
+        import threading
+        cache = Path(a.cache_dir)
+        todo = [f for f in files if a.force or up_to_date(f, tag, a.annotations) is None]
+        print(f"{len(files)} recordings, {len(todo)} to run (the rest are up to date)", flush=True)
+        copy_lock = threading.Lock()
+
+        def cached_job(f):
+            try:
+                with copy_lock:
+                    lp = local_copy(f, cache)
+            except Exception as e:  # noqa: BLE001
+                print(f"[FAIL] {f.name}: local copy: {e}", flush=True)
+                fails.append((str(f), f"local copy: {e}"))
+                return
+            try:
+                job(f, lp)
+            finally:
+                lp.unlink(missing_ok=True)
+
+        with ThreadPoolExecutor(max_workers=a.files_parallel) as ex:
+            list(ex.map(cached_job, todo))
+        print(f"finished: {len(todo) - len(fails)} ok, {len(fails)} failed", flush=True)
+        for f, e in fails:
+            print("  FAIL", f, e)
+        sys.exit(1 if fails else 0)
 
     with ThreadPoolExecutor(max_workers=a.files_parallel) as ex:
         list(ex.map(job, files))

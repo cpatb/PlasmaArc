@@ -37,6 +37,35 @@ from scipy.ndimage import label, binary_closing, convolve
 from skimage.morphology import skeletonize, disk
 
 import arc_filter  # single source of truth for flash / validity criteria
+from arc_shape import resample_arc  # N-point whole-arc reconstruction (npoint_restrike's resampling)
+from skimage.graph import route_through_array
+
+ROUTE_MARGIN_PX = 2       # crop margin around the skeleton for the foot-to-foot route (speed only)
+
+
+def skeleton_route(skel, a, b):
+    """Shortest 8-connected path ALONG the skeleton from pixel a to pixel b ((row, col) ints), as an (M, 2)
+    array, or None if they are not joined by skeleton pixels. Minimum-cost path (skimage MCP, geometric
+    steps) on cost 1 over skeleton pixels; off-skeleton pixels are forbidden (infinite cost)."""
+    if a is None or b is None:
+        return None
+    rr, cc = np.nonzero(skel)
+    r0, c0 = max(rr.min() - ROUTE_MARGIN_PX, 0), max(cc.min() - ROUTE_MARGIN_PX, 0)
+    r1, c1 = rr.max() + ROUTE_MARGIN_PX + 1, cc.max() + ROUTE_MARGIN_PX + 1
+    sub = skel[r0:r1, c0:c1]
+    s = (int(a[0]) - r0, int(a[1]) - c0)
+    e = (int(b[0]) - r0, int(b[1]) - c0)
+    if not (0 <= s[0] < sub.shape[0] and 0 <= s[1] < sub.shape[1] and sub[s]
+            and 0 <= e[0] < sub.shape[0] and 0 <= e[1] < sub.shape[1] and sub[e]):
+        return None
+    cost = np.where(sub, 1.0, np.inf)
+    try:
+        path, total = route_through_array(cost, s, e, fully_connected=True, geometric=True)
+    except ValueError:
+        return None
+    if not np.isfinite(total):
+        return None
+    return np.asarray(path) + np.array([r0, c0])
 
 warnings.filterwarnings('ignore')
 
@@ -597,7 +626,7 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
                    flash_eff_width=arc_filter.FLASH_EFF_WIDTH,
                    flash_arc_width=arc_filter.FLASH_ARC_WIDTH,
                    allow_tip_midline_fallback=False,
-                   low_thresh=None, low_frac=None):
+                   low_thresh=None, low_frac=None, npoint_n=0):
     # electrode_edges (J-hook geometry): (edge_a, edge_b, a_tip, b_tip) where
     # edge_a/edge_b are (M,2) point clouds of the detected electrode edges and
     # a_tip/b_tip are the facing hook tips.  When supplied it OVERRIDES the
@@ -750,6 +779,13 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
         return m
 
     m['arc_complete'] = True
+    if npoint_n:
+        # N points equally spaced (resample_arc, npoint_restrike's) along the skeleton route FROM the foot on
+        # electrode A TO the foot on electrode B, RAW (row, col); point 0 is therefore always on A. The J suite's
+        # ordered_path starts at the first endpoint in raster order, which for a two-footed BLADE arch is often a
+        # spur at the apex: on Air Re2250 t1 its ends were not the two attached feet in 20 % of frames.
+        pts = resample_arc(skeleton_route(skel, ta, tb), npoint_n)
+        m['_npts'] = None if pts is None else pts.astype(np.float32)
     g = float(np.hypot(ta[0]-tb[0], ta[1]-tb[1]))
     m['electrode_gap_px'] = g
     if px_per_mm: m['electrode_gap_mm'] = g/px_per_mm
@@ -942,6 +978,11 @@ def main():
     ap.add_argument('--flash-eff-width', type=float, default=arc_filter.FLASH_EFF_WIDTH,
                     help="Effective width area/length (px) above which a frame is is_flash "
                          "(saturated blob). Default %.0f." % arc_filter.FLASH_EFF_WIDTH)
+    ap.add_argument('--npoint-n',        type=int,   default=0,
+                    help="also write npoint_xy.npz: N points equally spaced along each detected arc "
+                         "(raw row,col; npoint_restrike's reconstruction, from this pass's skeleton). 0 = off")
+    ap.add_argument('--no-figures',      action='store_true',
+                    help="skip the per-run velocity_map.png / timeseries.png (numbers and .npy unchanged)")
     ap.add_argument('--qa-interval',     type=int,   default=DEFAULT_QA_INTERVAL,
                     help="Save a QA frame every N frames (default 500)")
     ap.add_argument('--gap-row',         type=int,   default=None,
@@ -1047,6 +1088,7 @@ def main():
         tip_cols = np.full(n_frames, np.nan)
         meas_all = [None] * n_frames
         qa_store = {}
+        np_frames, np_pts = [], []
 
         t0 = time.time()
         for i in range(n_frames):
@@ -1067,7 +1109,11 @@ def main():
                                   electrode_edges=electrode_edges,
                                   flash_eff_width=args.flash_eff_width,
                                   flash_arc_width=args.flash_arc_width,
-                                  low_thresh=args.low_thresh, low_frac=args.low_frac)
+                                  low_thresh=args.low_thresh, low_frac=args.low_frac,
+                                  npoint_n=args.npoint_n)
+            if args.npoint_n and m['arc_detected'] and m.get('_npts') is not None:
+                np_frames.append(i)
+                np_pts.append(m.pop('_npts'))
             meas_all[i] = m
             if m['arc_detected']:
                 tip_rows[i] = m['arc_tip_row']
@@ -1079,6 +1125,12 @@ def main():
                 print("  [%d/%d]  %.0f fr/s  ETA %.1f min" % (
                     i+1, n_frames, rate, (n_frames-i-1)/rate/60))
                 sys.stdout.flush()
+
+        if args.npoint_n:
+            # frames are LOCAL to this window (as the CSV's 'frame' column); raw (row, col), float32
+            np.savez(os.path.join(out_dir, "npoint_xy.npz"), n=args.npoint_n, H=H,
+                     frames=np.asarray(np_frames, np.int64),
+                     pts=(np.stack(np_pts) if np_pts else np.zeros((0, args.npoint_n, 2), np.float32)))
 
         # ── arc-tip velocity (central difference) ────────────────────
         tip_vels = np.full(n_frames, np.nan)  # mm/s
@@ -1171,6 +1223,7 @@ def main():
         vel_map[mask] = vel_sum[mask]/vel_cnt[mask]
         np.save(os.path.join(out_dir,"velocity_map.npy"), vel_map)
 
+    if n_frames > 0 and not args.no_figures:
         fig, ax = plt.subplots(figsize=(7,7))
         vmax = np.nanpercentile(vel_map, 98)
         im = ax.imshow(vel_map/1000, cmap='plasma', vmin=0,

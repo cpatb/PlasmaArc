@@ -89,6 +89,19 @@ def compute(stem: str, data_root: Path, n: int = N_HEADLINE,
     meas = pd.read_csv(rd / "measurements_all_events.csv",
                        usecols=lambda c: c in ("frame", "event_id", "arc_tip_row",
                                                "local_vel_ms"))
+    return compute_arrays(stem, frames, pts, meas, fps, pxmm, n=n, window=window)
+
+
+def compute_arrays(stem: str, frames: np.ndarray, pts: np.ndarray, meas: pd.DataFrame,
+                   fps: float, pxmm: float, n: int = N_HEADLINE,
+                   window: int = LOCAL_VEL_N) -> "tuple[pd.DataFrame, dict]":
+    """The per-segment local-velocity core of compute(), on arrays.
+
+    frames (M,), pts (M,n,2) in (row, col) where row INCREASES away from the electrodes (the convention of
+    arc_tip_row; an upward-arc rig passes H-1-row); meas has frame, event_id, arc_tip_row[, local_vel_ms]."""
+    if len(frames) == 0:
+        return pd.DataFrame(), dict(stem=stem, n_rows=0)
+    meas = meas.copy()
     meas["frame"] = pd.to_numeric(meas["frame"], errors="coerce")
     # align measurements to the reconstructed frames
     mi = meas.set_index("frame")
