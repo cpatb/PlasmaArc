@@ -38,7 +38,7 @@ def file_row(d: Path):
     px_ev = post.get("px_per_mm_used", cal["px_per_mm"])
     vscale = px_ev / pxmm
     r.update(scale_source="hand annotation (per file)" if annotated else "pooled arc-attachment",
-             gap_line_minus_edges_px=cal.get("gap_line_minus_edges_px"))
+             gap_end_offsets_px=cal.get("gap_end_offsets_px"))
     summ = (d / "re_strikes_qa_summary.txt").read_text(encoding="utf-8") if (d / "re_strikes_qa_summary.txt").exists() else ""
     r["physical_gap_anchor"] = "PHYSICAL gap" in summ
     r.update(N=det["N"], smear_S=det["smear_S"], T_low=det["T_low"], T_high=det["T_high"],

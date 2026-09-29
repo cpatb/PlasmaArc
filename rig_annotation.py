@@ -94,9 +94,70 @@ def geometry(ann: dict) -> dict:
     return out
 
 
-def edges_npz(ann: dict, path) -> Path:
+def straight_blades(ann: dict, shape) -> dict:
+    """STRAIGHT-EDGED electrodes (the BLADE rig): the drawn polylines only fix each edge's LINE (principal
+    axis through the drawn points); how far along the blade they were drawn does not matter.
+
+    Each blade's edge runs from the CUTOFF -- the foot of the perpendicular from its end of the drawn gap line
+    onto its line -- outward, away from the other blade, to the image border. A = the LEFT blade (smaller
+    column), whichever layer it was drawn in. Requires a gap line. Returns
+      A, B          : (M,2) [row, col] points every DENSIFY_STEP_PX along each extended edge
+      A_tip, B_tip  : the cutoffs (on the lines)
+      gap_end_offsets_px : perpendicular distance of each drawn gap end from its line [A, B]
+      opening_deg, ab_swapped (True if the layer called 'electrode A' was the RIGHT blade)
+    """
+    if not ann.get("gap_line") or not (ann.get("electrode_A") and ann.get("electrode_B")):
+        raise ValueError("straight blades need both edges and a gap line")
+    H, W = shape
+    lines = []
+    for key in ("electrode_A", "electrode_B"):
+        lines.append((densify(ann[key]).mean(0), edge_direction(ann[key])))
+    swapped = lines[0][0][1] > lines[1][0][1]
+    if swapped:
+        lines = lines[::-1]
+    ends = np.asarray(ann["gap_line"], float)
+
+    def perp(e, c, d):
+        rel = e - c
+        return abs(rel[0] * d[1] - rel[1] * d[0])
+
+    # pair each gap end with the line it lies nearer to; both ends on one line is an annotation error
+    dA = [perp(e, *lines[0]) for e in ends]
+    ia = int(np.argmin(dA))
+    eA, eB = ends[ia], ends[1 - ia]
+    if perp(eB, *lines[1]) > perp(eB, *lines[0]):
+        raise ValueError("both gap-line ends lie nearer the same blade")
+    feet = [c + ((e - c) @ d) * d for e, (c, d) in zip((eA, eB), lines)]
+    out = {}
+    dirs = []
+    for k, (f, f_other, (_, d)) in enumerate(zip(feet, feet[::-1], lines)):
+        u = d if d @ (f - f_other) > 0 else -d        # outward = away from the other blade's cutoff
+        dirs.append(u)
+        # largest t with f + t u inside the image
+        ts = []
+        for ax, hi in ((0, H - 1), (1, W - 1)):
+            if u[ax] > 1e-12:
+                ts.append((hi - f[ax]) / u[ax])
+            elif u[ax] < -1e-12:
+                ts.append((0 - f[ax]) / u[ax])
+        t_max = max(min(ts), 0.0)
+        out["AB"[k]] = densify(np.array([f, f + t_max * u]))
+    out.update(A_tip=feet[0], B_tip=feet[1],
+               gap_end_offsets_px=[float(perp(eA, *lines[0])), float(perp(eB, *lines[1]))],
+               opening_deg=float(np.degrees(np.arccos(np.clip(dirs[0] @ dirs[1], -1, 1)))),
+               cutoff_sep_px=float(np.hypot(*(feet[0] - feet[1]))), ab_swapped=bool(swapped))
+    return out
+
+
+def edges_npz(ann: dict, path, shape=None) -> Path:
     """Write the electrode-edges npz that analyze_blade --electrode-edges reads (A, B, A_tip, B_tip).
-    The tips are the gap ends so the asymmetry midline is the perpendicular bisector of the gap."""
+    With `shape` (H, W): straight blades extended from the gap to the image border (straight_blades).
+    Without: the drawn polylines as they are, tips = the gap ends."""
+    if shape is not None:
+        sb = straight_blades(ann, shape)
+        path = Path(path)
+        np.savez(path, A=sb["A"], B=sb["B"], A_tip=sb["A_tip"], B_tip=sb["B_tip"])
+        return path
     geo = geometry(ann)
     A, B = densify(ann["electrode_A"]), densify(ann["electrode_B"])
     ends = np.asarray(geo["gap_ends"], float)

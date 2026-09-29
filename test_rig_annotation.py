@@ -73,3 +73,23 @@ def test_save_load_roundtrip_recomputes(tmp_path):
     ra.save(ann, tmp_path / "r.json")
     back = ra.load(tmp_path / "r.json")
     assert back["derived"]["px_per_mm"] == pytest.approx(10.0)
+
+
+def test_straight_blades_extend_from_the_cutoff_to_the_border():
+    # hand-computed: A cutoff (230, 100) going up-left at 45 deg meets col 0 at row 130; B cutoff (230, 124)
+    # going up-right meets col 255 at row 230 - 131 = 99
+    ann = dict(electrode_A=[[200.0, 70.0], [190.0, 60.0]], electrode_B=[[200.0, 154.0], [190.0, 164.0]],
+               gap_line=[[230.0, 124.0], [230.0, 100.0]], gap_mm=2.4)
+    sb = ra.straight_blades(ann, (256, 256))
+    assert np.allclose(sb["A_tip"], [230, 100]) and np.allclose(sb["B_tip"], [230, 124])
+    assert np.allclose(sb["A"][-1], [130, 0]) and np.allclose(sb["B"][-1], [99, 255])
+    assert sb["A"][:, 0].max() <= 230 + 1e-9 and sb["B"][:, 0].max() <= 230 + 1e-9   # nothing below the gap
+    assert sb["opening_deg"] == pytest.approx(90.0)
+    assert np.hypot(*np.diff(sb["A"], axis=0).T).max() <= ra.DENSIFY_STEP_PX + 1e-9
+
+
+def test_straight_blades_refuse_a_gap_line_on_one_blade():
+    ann = dict(electrode_A=[[200.0, 70.0], [190.0, 60.0]], electrode_B=[[200.0, 154.0], [190.0, 164.0]],
+               gap_line=[[230.0, 100.0], [220.0, 90.0]], gap_mm=2.4)
+    with pytest.raises(ValueError):
+        ra.straight_blades(ann, (256, 256))

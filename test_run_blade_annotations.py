@@ -63,12 +63,27 @@ def test_gap_mm_disagreeing_with_folder_stops(adir):
     assert any("gap_mm" in p for p in problems)
 
 
-def test_gap_line_inside_edges_is_flagged_not_stopped(adir):
-    # gap line 19 px while the traced edges are 24 px apart (the first real annotation: 20.0 vs 24.1)
-    write(adir, "rig_a.json", [CINE], gap_line=[[230.0, 102.0], [230.0, 121.0]])
+def test_short_edges_drawn_far_up_the_blade_are_extended_to_the_gap(adir):
+    # edges drawn only well up each blade (the typical real annotation): the lines still reach the gap
+    write(adir, "rig_a.json", [CINE], electrode_A=[[200.0, 70.0], [180.0, 50.0]],
+          electrode_B=[[200.0, 154.0], [180.0, 174.0]])
     cal, problems, flags = rbu.annotation_calibration(CINE, 256, 256)
-    assert problems == [] and len(flags) == 1
-    assert np.isclose(cal["px_per_mm"], 19.0 / 2.4)
+    assert problems == [] and flags == []
+    assert np.allclose(cal["gap_end_offsets_px"], 0.0, atol=1e-9)
+    assert np.isclose(cal["cloud_sep_min_px"], 24.0)
+
+
+def test_gap_end_off_its_blade_line_is_flagged_not_stopped(adir):
+    write(adir, "rig_a.json", [CINE], gap_line=[[230.0, 100.0], [230.0, 131.0]])   # B end 7/sqrt2 = 4.95 px off
+    cal, problems, flags = rbu.annotation_calibration(CINE, 256, 256)
+    assert problems == [] and len(flags) == 1 and "blade-B" in flags[0]
+    assert np.isclose(cal["gap_end_offsets_px"][1], 7 / np.sqrt(2))
+
+
+def test_swapped_layers_are_relabelled_left_is_A(adir):
+    write(adir, "rig_a.json", [CINE], electrode_A=V["electrode_B"], electrode_B=V["electrode_A"])
+    cal, problems, _ = rbu.annotation_calibration(CINE, 256, 256)
+    assert problems == [] and cal["ab_swapped_in_drawing"] is True
 
 
 def test_incomplete_annotation_stops(adir):

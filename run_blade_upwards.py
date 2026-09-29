@@ -125,18 +125,24 @@ def annotation_calibration(p: Path, H: int, W: int):
         problems.append(f"annotation gap_mm {ann['gap_mm']} != folder {gap_folder} mm")
     if not (GAP_PX_PLAUSIBLE[0] <= d["gap_px"] <= GAP_PX_PLAUSIBLE[1]):
         problems.append(f"annotated gap {d['gap_px']:.1f} px outside {GAP_PX_PLAUSIBLE}")
-    mismatch = d["gap_px"] - d.get("gap_from_edges_px", np.nan)
-    if abs(mismatch) > ELEC_TOL_PX:
-        flags.append(f"gap line {d['gap_px']:.1f} px vs traced edges' closest approach "
-                     f"{d.get('gap_from_edges_px', np.nan):.1f} px")
-    cal = dict(source="hand annotation", annotation=str(path),
+    # BLADE electrodes are straight: the drawn edges fix only each LINE, extended from the gap cutoff to the
+    # image border (rig_annotation.straight_blades)
+    try:
+        sb = ra.straight_blades(ann, (H, W))
+    except ValueError as e:
+        return None, problems + [str(e)], flags
+    for k, off in zip("AB", sb["gap_end_offsets_px"]):
+        if off > ELEC_TOL_PX:
+            flags.append(f"gap-line end {off:.1f} px off the blade-{k} line (> {ELEC_TOL_PX} px)")
+    cal = dict(source="hand annotation", edge_model="straight lines from the gap cutoff to the image border",
+               annotation=str(path),
                annotation_md5=hashlib.md5(path.read_bytes()).hexdigest(), annotator=ann.get("annotator"),
                annotation_saved=ann.get("saved"), gap_source=d["gap_source"], gap_mm=ann["gap_mm"],
                gap_px=d["gap_px"], px_per_mm=d["px_per_mm"], gap_ends=d["gap_ends"], gap_row=d["gap_row"],
-               gap_from_edges_px=d.get("gap_from_edges_px"), gap_line_minus_edges_px=float(mismatch),
-               full_opening_angle_deg=d.get("opening_deg"),
-               # the attachment test's two point sets ARE the traced edges, so their separation is this:
-               cloud_sep_min_px=d.get("gap_from_edges_px"), gap_ransac_tips_px=float("nan"),
+               gap_end_offsets_px=sb["gap_end_offsets_px"], cutoff_sep_px=sb["cutoff_sep_px"],
+               ab_swapped_in_drawing=sb["ab_swapped"], full_opening_angle_deg=sb["opening_deg"],
+               # the attachment test's two point sets ARE the extended edges; they are closest at the cutoffs:
+               cloud_sep_min_px=sb["cutoff_sep_px"], gap_ransac_tips_px=float("nan"),
                flags=flags, status="OK" if not problems else "FAIL: " + "; ".join(problems))
     return cal, problems, flags
 
@@ -246,7 +252,8 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
         hcal["clean_arches"] = cal.get("clean_arches")
         cal = hcal
         meta["calibration"] = cal
-        edges = ra.edges_npz(ra.load(cal["annotation"]), cal_dir / (p.stem + "_edges_annotated.npz"))
+        edges = ra.edges_npz(ra.load(cal["annotation"]), cal_dir / (p.stem + "_edges_annotated.npz"),
+                             shape=(src.H, src.W))
         for fl in flags:
             print(f"[flag] {p.name}: {fl}", flush=True)
     else:
@@ -391,7 +398,9 @@ def main():
                 continue
             n_ok += 1
             print(f"ok           {f.stem}: {cal['px_per_mm']:.3f} px/mm (gap {cal['gap_px']:.2f} px, "
-                  f"edges {cal['gap_from_edges_px']:.2f} px, opening {cal['full_opening_angle_deg']:.1f} deg)"
+                  f"gap ends off their lines {cal['gap_end_offsets_px'][0]:.1f}/{cal['gap_end_offsets_px'][1]:.1f} px, "
+                  f"opening {cal['full_opening_angle_deg']:.1f} deg"
+                  + (", A/B drawn swapped (fixed)" if cal['ab_swapped_in_drawing'] else "") + ")"
                   + ("".join(f"\n               FLAG: {fl}" for fl in flags)))
         print(f"{n_ok} of {len(files)} recordings have a usable hand annotation")
         return
