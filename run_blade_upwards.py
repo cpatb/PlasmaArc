@@ -44,9 +44,11 @@ import cine_frames as cf
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "validation_upwards"))
 import gap_calibration  # noqa: E402
+import rig_annotation as ra  # noqa: E402
 
 DATA_ROOT = Path(r"E:\BladeReactor_Upwards")
 OUT_ROOT = Path(r"E:\BladeReactor_Upwards_analysis")
+ANNOT_DIR = HERE / "rig_annotations"   # rig_annotate.py (napari) saves one JSON per annotated video here
 
 GAP_MM = 2.4                    # folder name "45degree_2.4mmGap": minimum electrode gap (trusted)
 ARC_DIRECTION = "up"            # upward rig; pycine orientation has electrodes at the bottom
@@ -61,8 +63,6 @@ LOCAL_VEL_N = 10
 GAP_PX_PLAUSIBLE = (12.0, 45.0)  # outside this the calibration is reported as failed
 ANGLE_TOL_DEG = 5.0             # full opening vs 2 x folder angle: flag beyond this
 KNOWN_LATTICE = (list(range(1, 122, 8)), list(range(11, 124, 16)))
-# independent cross-check only (hand-marked on Argon Re2250 t1 by the collaborator's LeadArc tool)
-ALEX_GAP_PX = 33.1119129345809
 
 
 def parse_condition(p: Path):
@@ -78,9 +78,67 @@ def parse_condition(p: Path):
                 gap_mm_folder=float(gap.group(1)) if gap else None)
 
 
-def out_dir_for(p: Path, tag: str = "") -> Path:
-    base = OUT_ROOT / ("runs" if not tag else f"sens_{tag}") / p.relative_to(DATA_ROOT).parent
+def out_dir_for(p: Path, tag: str = "", annotated: bool = False) -> Path:
+    runs = "runs_annotated" if annotated else "runs"
+    base = OUT_ROOT / (runs if not tag else f"sens_{'annot_' if annotated else ''}{tag}") / p.relative_to(DATA_ROOT).parent
     return base / p.stem
+
+
+def find_annotation(p: Path):
+    """The rig_annotate JSON whose `cines` list contains this recording. Returns (path, None) or (None, reason)."""
+    hits = []
+    for j in sorted(ANNOT_DIR.glob("rig_*.json")):
+        try:
+            cines = json.loads(j.read_text(encoding="utf-8")).get("cines", [])
+        except (json.JSONDecodeError, OSError):
+            continue
+        if any(Path(c).stem == p.stem for c in cines):
+            hits.append(j)
+    if not hits:
+        return None, f"no hand annotation for {p.stem} in {ANNOT_DIR}"
+    if len(hits) > 1:
+        return None, f"{len(hits)} annotations claim {p.stem}: {[h.name for h in hits]}"
+    return hits[0], None
+
+
+def annotation_calibration(p: Path, H: int, W: int):
+    """Hand-annotated gap and electrode edges for one recording.
+
+    Returns (cal, problems, flags): `problems` non-empty means the file must STOP. Everything is recomputed
+    from the drawn lines by rig_annotation.load, never read from stored numbers."""
+    import hashlib
+    path, why = find_annotation(p)
+    if path is None:
+        return None, [why], []
+    try:
+        ann = ra.load(path)
+    except (ValueError, KeyError) as e:
+        return None, [f"{path.name} is incomplete or unreadable: {e}"], []
+    d = ann["derived"]
+    problems, flags = [], []
+    if not (ann.get("electrode_A") and ann.get("electrode_B")):
+        problems.append("annotation has no electrode A and/or B edge")
+    if list(ann.get("image_shape", [])) != [H, W]:
+        problems.append(f"annotation drawn on a {ann.get('image_shape')} image, recording is {[H, W]}")
+    gap_folder = parse_condition(p)["gap_mm_folder"]
+    if gap_folder is not None and not np.isclose(ann["gap_mm"], gap_folder, rtol=0, atol=1e-9):
+        problems.append(f"annotation gap_mm {ann['gap_mm']} != folder {gap_folder} mm")
+    if not (GAP_PX_PLAUSIBLE[0] <= d["gap_px"] <= GAP_PX_PLAUSIBLE[1]):
+        problems.append(f"annotated gap {d['gap_px']:.1f} px outside {GAP_PX_PLAUSIBLE}")
+    mismatch = d["gap_px"] - d.get("gap_from_edges_px", np.nan)
+    if abs(mismatch) > ELEC_TOL_PX:
+        flags.append(f"gap line {d['gap_px']:.1f} px vs traced edges' closest approach "
+                     f"{d.get('gap_from_edges_px', np.nan):.1f} px")
+    cal = dict(source="hand annotation", annotation=str(path),
+               annotation_md5=hashlib.md5(path.read_bytes()).hexdigest(), annotator=ann.get("annotator"),
+               annotation_saved=ann.get("saved"), gap_source=d["gap_source"], gap_mm=ann["gap_mm"],
+               gap_px=d["gap_px"], px_per_mm=d["px_per_mm"], gap_ends=d["gap_ends"], gap_row=d["gap_row"],
+               gap_from_edges_px=d.get("gap_from_edges_px"), gap_line_minus_edges_px=float(mismatch),
+               full_opening_angle_deg=d.get("opening_deg"),
+               # the attachment test's two point sets ARE the traced edges, so their separation is this:
+               cloud_sep_min_px=d.get("gap_from_edges_px"), gap_ransac_tips_px=float("nan"),
+               flags=flags, status="OK" if not problems else "FAIL: " + "; ".join(problems))
+    return cal, problems, flags
 
 
 def run(cmd, log):
@@ -96,14 +154,20 @@ def run(cmd, log):
 
 
 def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, tag="", figures=False,
-            low_frac=LOW_FRAC):
-    od = out_dir_for(p, tag)
+            low_frac=LOW_FRAC, annotated=False):
+    od = out_dir_for(p, tag, annotated)
     od.mkdir(parents=True, exist_ok=True)
     log = od / "pipeline.log"
     done = od / "DONE.json"
     if done.exists() and not force:
-        print(f"[skip] {p.name} (DONE)", flush=True)
-        return json.loads(done.read_text())
+        prev = json.loads(done.read_text())
+        a_path, _ = find_annotation(p) if annotated else (None, None)
+        import hashlib
+        cur_md5 = hashlib.md5(a_path.read_bytes()).hexdigest() if a_path else None
+        if not annotated or prev.get("calibration", {}).get("annotation_md5") == cur_md5:
+            print(f"[skip] {p.name} (DONE)", flush=True)
+            return prev
+        print(f"[redo] {p.name}: its hand annotation changed since the last run", flush=True)
     t0 = time.time()
     meta = dict(cine=str(p), out=str(od), tag=tag, **parse_condition(p),
                 started=time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -130,6 +194,12 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
         meta["status"] = "STOPPED: defect map is not the known 128-px lattice"
         save()
         raise RuntimeError(meta["status"])
+    if annotated:           # fail before the expensive stages, not after them
+        _, problems, _ = annotation_calibration(p, src.H, src.W)
+        if problems:
+            meta["status"] = "STOPPED: annotation " + "; ".join(problems)
+            save()
+            raise RuntimeError(meta["status"])
 
     # 1. background, noise, smear -> thresholds
     bgp = od / "background_b10.npy"
@@ -163,13 +233,29 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
         print(f"[done] {p.name}  NO_GLIDING  detected {cal.get('detected')}  clean arches {cal.get('clean_arches')}"
               f" / {cal.get('frames_scanned')} frames", flush=True)
         return meta
-    if cal.get("status") != "OK" or not (GAP_PX_PLAUSIBLE[0] <= cal["gap_px"] <= GAP_PX_PLAUSIBLE[1]):
-        meta["status"] = f"STOPPED: calibration {cal.get('status')} gap_px {cal.get('gap_px')}"
-        save()
-        raise RuntimeError(meta["status"])
+    if annotated:
+        # gap and electrode edges from the HAND annotation; the automatic calibration above is kept only for
+        # the regime count (NO_GLIDING) and for comparison, so its geometry failures do not stop the file
+        hcal, problems, flags = annotation_calibration(p, src.H, src.W)
+        meta["calibration_auto"] = cal
+        if problems:
+            meta["calibration"] = hcal
+            meta["status"] = "STOPPED: annotation " + "; ".join(problems)
+            save()
+            raise RuntimeError(meta["status"])
+        hcal["clean_arches"] = cal.get("clean_arches")
+        cal = hcal
+        meta["calibration"] = cal
+        edges = ra.edges_npz(ra.load(cal["annotation"]), cal_dir / (p.stem + "_edges_annotated.npz"))
+        for fl in flags:
+            print(f"[flag] {p.name}: {fl}", flush=True)
+    else:
+        if cal.get("status") != "OK" or not (GAP_PX_PLAUSIBLE[0] <= cal["gap_px"] <= GAP_PX_PLAUSIBLE[1]):
+            meta["status"] = f"STOPPED: calibration {cal.get('status')} gap_px {cal.get('gap_px')}"
+            save()
+            raise RuntimeError(meta["status"])
+        edges = cal_dir / (p.stem + "_edges.npz")
     pxmm = cal["px_per_mm"]
-    edges = cal_dir / (p.stem + "_edges.npz")
-    meta["calibration"]["alex_gap_px_crosscheck"] = ALEX_GAP_PX
     # the folder label (45 deg per blade from vertical = 90 deg full opening) is an independent check on
     # the blade loci; flagged (not stopped) because a two-band blade can tilt a RANSAC line by a few deg
     meta["calibration"]["angle_flag"] = abs(cal["full_opening_angle_deg"] - 2 * (meta["angle_deg"] or 45)) > ANGLE_TOL_DEG
@@ -280,6 +366,11 @@ def main():
     ap.add_argument("--low-scale", type=float, default=1.0)
     ap.add_argument("--low-frac", type=float, default=LOW_FRAC)
     ap.add_argument("--high-scale", type=float, default=1.0)
+    ap.add_argument("--annotations", action="store_true",
+                    help="use the hand-drawn gap and electrode edges from rig_annotations\\ (rig_annotate.py); a "
+                         "recording without one is STOPPED. Output goes to runs_annotated\\")
+    ap.add_argument("--check-annotations", action="store_true",
+                    help="list every recording's hand annotation (px/mm, gap line vs edges, problems); run nothing")
     a = ap.parse_args()
     # trial-major, then Re, then gas: every condition's trial 1 before any trial 2, and the gases
     # interleaved, so a partial batch covers every gas early
@@ -289,6 +380,21 @@ def main():
         files = [Path(x.strip()) for x in Path(a.list_file).read_text().splitlines() if x.strip()]
     if a.match:
         files = [f for f in files if a.match in f.stem]
+    if a.check_annotations:
+        n_ok = 0
+        for f in files:
+            s_ = cf.open_cine(str(f))
+            H, W = s_.H, s_.W
+            cal, problems, flags = annotation_calibration(f, H, W)
+            if problems:
+                print(f"MISSING/BAD  {f.stem}: {'; '.join(problems)}")
+                continue
+            n_ok += 1
+            print(f"ok           {f.stem}: {cal['px_per_mm']:.3f} px/mm (gap {cal['gap_px']:.2f} px, "
+                  f"edges {cal['gap_from_edges_px']:.2f} px, opening {cal['full_opening_angle_deg']:.1f} deg)"
+                  + ("".join(f"\n               FLAG: {fl}" for fl in flags)))
+        print(f"{n_ok} of {len(files)} recordings have a usable hand annotation")
+        return
     if a.list or not (a.all or a.match or a.list_file):
         for f in files:
             print(f)
@@ -301,7 +407,7 @@ def main():
     def job(f):
         try:
             process(f, a.workers, force=a.force, low_scale=a.low_scale, high_scale=a.high_scale, tag=tag,
-                    figures=a.figures, low_frac=a.low_frac)
+                    figures=a.figures, low_frac=a.low_frac, annotated=a.annotations)
         except Exception as e:  # recorded, the batch continues
             print(f"[FAIL] {f.name}: {e}", flush=True)
             fails.append((str(f), str(e)))

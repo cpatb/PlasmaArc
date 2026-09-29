@@ -31,9 +31,14 @@ def file_row(d: Path):
     # ONE pooled scale for every mm/m/s number. event_velocity ran at px_ev (the file's own scale, or the pooled
     # one if post-staged); its m/s outputs are exactly linear in 1/px_per_mm (verified 2026-09-29: ratios 1.0435 vs
     # 1.0435 expected, max dev 7e-4 = print rounding), so they are rescaled by px_ev / POOLED.
-    pxmm = POOLED_PX_PER_MM
+    # A HAND-annotated run (run_blade_upwards --annotations) uses its own drawn gap instead: that is a
+    # per-video measurement of the gap, not an estimator to be pooled over.
+    annotated = cal.get("source") == "hand annotation"
+    pxmm = cal["px_per_mm"] if annotated else POOLED_PX_PER_MM
     px_ev = post.get("px_per_mm_used", cal["px_per_mm"])
-    vscale = px_ev / POOLED_PX_PER_MM
+    vscale = px_ev / pxmm
+    r.update(scale_source="hand annotation (per file)" if annotated else "pooled arc-attachment",
+             gap_line_minus_edges_px=cal.get("gap_line_minus_edges_px"))
     summ = (d / "re_strikes_qa_summary.txt").read_text(encoding="utf-8") if (d / "re_strikes_qa_summary.txt").exists() else ""
     r["physical_gap_anchor"] = "PHYSICAL gap" in summ
     r.update(N=det["N"], smear_S=det["smear_S"], T_low=det["T_low"], T_high=det["T_high"],
