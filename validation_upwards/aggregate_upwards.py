@@ -17,8 +17,9 @@ UPWARD_JUMP_MAX_PX = 10     # V-H4': p99 of frame-to-frame tip GROWTH above this
 
 def file_row(d: Path):
     m = json.loads((d / "run_metadata.json").read_text())
-    r = dict(stem=d.name, gas=m["gas"], Re=m["Re"], trial=m["trial"], status=m.get("status"),
-             n_frames=m.get("n_frames"), fps=m.get("fps"))
+    post = json.loads((d / "POST.json").read_text()) if (d / "POST.json").exists() else {}
+    r = dict(stem=d.name, gas=m["gas"], Re=m["Re"], trial=m["trial"], status=m.get("status"), tag=m.get("tag", ""),
+             post_status=post.get("status"), n_frames=m.get("n_frames"), fps=m.get("fps"))
     if m.get("status") != "DONE":
         return r
     det, cal = m["detector"], m["calibration"]
@@ -27,18 +28,19 @@ def file_row(d: Path):
     r.update(N=det["N"], smear_S=det["smear_S"], T_low=det["T_low"], T_high=det["T_high"],
              sat_frames_of_2000=det["sat_frames"], b10_max=det["b10_max"],
              gap_px=cal["gap_px"], px_per_mm=pxmm, opening_deg=cal["full_opening_angle_deg"],
-             tipL_r=cal["fits"]["L"]["tip"][0], tipL_c=cal["fits"]["L"]["tip"][1],
-             tipR_r=cal["fits"]["R"]["tip"][0], tipR_c=cal["fits"]["R"]["tip"][1],
+             gapA_r=cal["gap_ends"][0][0], gapA_c=cal["gap_ends"][0][1],
+             gapB_r=cal["gap_ends"][1][0], gapB_c=cal["gap_ends"][1][1],
+             gap_ransac_tips_px=cal["gap_ransac_tips_px"], cloud_sep_min_px=cal["cloud_sep_min_px"],
              clean_arches=cal["clean_arches"])
-    df = pd.read_csv(d / "measurements.csv", usecols=["frame", "arc_detected", "arc_complete", "area_px",
+    df = pd.read_csv(d / "measurements.csv", usecols=["frame", "arc_detected", "arc_complete", "is_flash", "area_px",
                                                         "arc_length_px", "arc_width_px", "arc_tip_row"])
     assert len(df) == m["n_frames"], (d, len(df))
-    comp = df["arc_complete"] == 1
-    r.update(frac_complete=float(comp.mean()))
+    comp = (df["arc_complete"] == 1) & (df["is_flash"] == 0)    # arc_filter.valid_frames criterion
+    r.update(frac_complete=float(comp.mean()), n_flash_complete=int(((df["arc_complete"] == 1) & (df["is_flash"] == 1)).sum()))
     c = df[comp]
     # arc_tip_row ('up') = H-1-row, i.e. distance from the BOTTOM EDGE; the gap sits at the mean
     # calibrated blade-tip row, so height above the gap = arc_tip_row - (H-1-gap_row)
-    gap_from_bottom = (m["H"] - 1) - 0.5 * (cal["fits"]["L"]["tip"][0] + cal["fits"]["R"]["tip"][0])
+    gap_from_bottom = (m["H"] - 1) - cal["gap_row"]
     h = c["arc_tip_row"] - gap_from_bottom
     r.update(arc_len_mm_med=float(np.median(c["arc_length_px"]) / pxmm) if len(c) else np.nan,
              eff_width_px_med=float(np.median(c["area_px"] / c["arc_length_px"].clip(lower=1))) if len(c) else np.nan,
@@ -74,8 +76,12 @@ rows = [file_row(d) for d in dirs]
 F = pd.DataFrame(rows).sort_values(["gas", "Re", "trial"])
 F.to_csv(OUT / "per_recording.csv", index=False)
 print(f"recordings found: {len(F)}; DONE: {(F['status'] == 'DONE').sum()}")
-D = F[F["status"] == "DONE"].copy()
-print(f"after status==DONE filter: {len(D)}")
+D = F[(F["status"] == "DONE") & (F["tag"] == "")].copy()
+print(f"after status==DONE and nominal-tag filter: {len(D)}")
+np_ = int((D["post_status"] != "DONE").sum())
+print(f"  of which WITHOUT post-stage (flash cut + physical gap row): {np_}")
+D = D[D["post_status"] == "DONE"]
+print(f"after post-stage filter: {len(D)}")
 
 metrics = ["frac_complete", "arc_len_mm_med", "tip_height_above_gap_mm_med", "tip_height_above_gap_mm_p90", "event_rate_hz", "event_dur_ms_med",
            "event_vel_ms_med", "local_vel_ms_med", "n_restrikes", "frac_modeB", "cycle_ms_mean",

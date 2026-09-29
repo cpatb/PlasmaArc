@@ -34,9 +34,8 @@ RANSAC_RESID_PX = 2.0
 TIP_QUANTILE = 0.01
 SEED = 20260928
 EDGE_MIN_HITS_FRAC = 0.002   # edge-cloud pixel kept if hit by >= 0.2 % of clean arches (and >= 3)
-EDGE_LINE_TOL_PX = 6.0       # ... and within this of its own blade line (skeleton ends sit a few px off the edge)
-EDGE_SIDE_MARGIN_PX = 5.0    # ... and at least this much closer to its own line than to the other blade's
-EDGE_SEP_MIN_FRAC = 0.8      # the two clouds must stay >= 0.8 x gap apart, else the calibration FAILS
+EDGE_LINE_TOL_PX = 12.0      # a dense foot pixel farther than this from BOTH blade lines is a stray
+EDGE_SEP_MIN_FRAC = 0.5      # skeleton-endpoint clouds must stay >= 0.5 x gap apart (ends sit inside the arc)
 
 
 def outward_dir(sk, e, n_back=5):
@@ -110,18 +109,13 @@ def main(cine, out, T, T_low=None, background=None, low_frac=None):
     dL, dR = np.array(fits["L"]["dir"]), np.array(fits["R"]["dir"])
     full_angle = float(np.degrees(np.arccos(np.clip(dL @ dR, -1, 1))))
     tipL, tipR = np.array(fits["L"]["tip"]), np.array(fits["R"]["tip"])
-    gap_px = float(np.hypot(*(tipL - tipR)))
-    res.update(fits=fits, full_opening_angle_deg=full_angle,
-               half_angle_from_vertical_L=float(np.degrees(np.arctan2(abs(dL[1]), dL[0]))),
-               half_angle_from_vertical_R=float(np.degrees(np.arctan2(abs(dR[1]), dR[0]))),
-               gap_px=gap_px, px_per_mm=gap_px / GAP_MM, tip_row_max=float(max(tipL[0], tipR[0])),
-               status="OK")
-    # electrode-edge clouds for analyze_blade --electrode-edges: skeleton endpoints (the quantity
-    # analyze_blade tests), pixels hit often enough to be an attachment site, not a stray foot
-    # A cloud point must ALSO lie on its own blade: within EDGE_LINE_TOL_PX of that blade's RANSAC line
-    # and >= EDGE_SIDE_MARGIN_PX closer to it than to the other blade's line.  Without this, short arcs
-    # with BOTH feet on one blade put their right-hand foot into cloud B (found 01:00 on Air Re3156 t1:
-    # B held (220, 92) on the LEFT blade, so root spots there passed the attachment test).
+    gap_ransac_px = float(np.hypot(*(tipL - tipR)))
+
+    # SIDE ASSIGNMENT (v3, 01:20): each foot belongs to the blade whose RANSAC line is NEARER; the
+    # left/right order within one arch is not used.  v1 used the order (a short arc with both feet on
+    # one blade put a point on the wrong blade: Air Re3156 B held (220, 92)); v2 required <= 6 px from
+    # the line, which on Argon Re2250 threw away the INNER of two parallel attachment bands ~6 px apart
+    # -- the band that sets the gap (tip-to-tip 27.4 px vs 20-21 px between innermost attachments).
     thr = max(3, int(np.ceil(EDGE_MIN_HITS_FRAC * n_arch)))
 
     def line_dist(P, nm):
@@ -129,24 +123,39 @@ def main(cine, out, T, T_low=None, background=None, low_frac=None):
         rel = P - o
         return np.abs(rel[:, 0] * d[1] - rel[:, 1] * d[0])
 
-    clouds, dropped = {}, {}
-    for nm, E, own, other in (("A", np.array(epL), "L", "R"), ("B", np.array(epR), "R", "L")):
-        u, c = np.unique(E.astype(int), axis=0, return_counts=True)
+    def dense_sided(points):
+        u, c = np.unique(np.round(points).astype(int), axis=0, return_counts=True)
         u = u[c >= thr].astype(float)
-        dn, do = line_dist(u, own), line_dist(u, other)
-        keep = (dn <= EDGE_LINE_TOL_PX) & (dn + EDGE_SIDE_MARGIN_PX <= do)
-        clouds[nm], dropped[nm] = u[keep], u[~keep].tolist()
-    if len(clouds["A"]) and len(clouds["B"]):
-        dAB = np.hypot(*(clouds["A"][:, None, :] - clouds["B"][None, :, :]).transpose(2, 0, 1))
-        sep = float(dAB.min())
-    else:
-        sep = float("nan")
-    res.update(edge_min_hits=thr, edge_A_px=int(len(clouds["A"])), edge_B_px=int(len(clouds["B"])),
-               edge_dropped=dropped, cloud_sep_min_px=sep)
+        dLd, dRd = line_dist(u, "L"), line_dist(u, "R")
+        near = np.minimum(dLd, dRd) <= EDGE_LINE_TOL_PX            # drop stray feet far from both blades
+        return u[near & (dLd < dRd)], u[near & (dRd < dLd)], u[~near].tolist()
+
+    # gap = closest approach of the dense FOOT-EXTREMITY clouds (arc feet sit on the metal; their
+    # minimum separation across the gap is the measurable minimum gap in projection)
+    fA, fB, f_stray = dense_sided(np.vstack([L, R]))
+    if not (len(fA) and len(fB)):
+        res["status"] = "FAIL: empty foot cloud on one blade"
+        Path(out, Path(cine).stem + "_gap.json").write_text(json.dumps(res, indent=1))
+        return
+    dAB = np.hypot(*(fA[:, None, :] - fB[None, :, :]).transpose(2, 0, 1))
+    ia, ib = np.unravel_index(np.argmin(dAB), dAB.shape)
+    gap_px = float(dAB[ia, ib])
+    endA, endB = fA[ia], fB[ib]
+    # attachment-test clouds from SKELETON ENDPOINTS (the quantity analyze_blade tests), same sides
+    cA, cB, c_stray = dense_sided(np.vstack([np.array(epL), np.array(epR)]))
+    sep = float(np.hypot(*(cA[:, None, :] - cB[None, :, :]).transpose(2, 0, 1)).min()) if len(cA) and len(cB) else float("nan")
+    res.update(fits=fits, full_opening_angle_deg=full_angle,
+               half_angle_from_vertical_L=float(np.degrees(np.arctan2(abs(dL[1]), dL[0]))),
+               half_angle_from_vertical_R=float(np.degrees(np.arctan2(abs(dR[1]), dR[0]))),
+               gap_px=gap_px, px_per_mm=gap_px / GAP_MM, gap_ends=[endA.tolist(), endB.tolist()],
+               gap_ransac_tips_px=gap_ransac_px, gap_row=float(0.5 * (endA[0] + endB[0])),
+               edge_min_hits=thr, edge_A_px=int(len(cA)), edge_B_px=int(len(cB)),
+               foot_stray=f_stray, edge_stray=c_stray, cloud_sep_min_px=sep, status="OK")
     if not (sep >= EDGE_SEP_MIN_FRAC * gap_px):
         res["status"] = f"FAIL: edge clouds only {sep:.1f} px apart (< {EDGE_SEP_MIN_FRAC} x gap {gap_px:.1f})"
+    clouds = {"A": cA, "B": cB}
     Path(out).mkdir(parents=True, exist_ok=True)
-    np.savez(Path(out, Path(cine).stem + "_edges.npz"), A=clouds["A"], B=clouds["B"], A_tip=tipL, B_tip=tipR)
+    np.savez(Path(out, Path(cine).stem + "_edges.npz"), A=cA, B=cB, A_tip=endA, B_tip=endB)
     Path(out, Path(cine).stem + "_gap.json").write_text(json.dumps(res, indent=1))
 
     import matplotlib
@@ -163,11 +172,12 @@ def main(cine, out, T, T_low=None, background=None, low_frac=None):
         ax.plot(o[1] + tt * d[1], o[0] + tt * d[0], c=c, lw=1)
         ax.plot(fits[nm]["tip"][1], fits[nm]["tip"][0], "r+", ms=12)
     ax.set_xlim(40, 200); ax.set_ylim(256, 120); ax.set_aspect("equal")
-    ax.set_title(f"gap {gap_px:.1f} px  angle {full_angle:.1f}")
+    ax.plot([endA[1], endB[1]], [endA[0], endB[0]], "r-", lw=2)
+    ax.set_title(f"gap {gap_px:.1f} px (ransac tips {gap_ransac_px:.1f})  angle {full_angle:.1f}")
     fig.savefig(Path(out, Path(cine).stem + "_gap.png"), dpi=90)
     print(json.dumps({k: res[k] for k in ("clean_arches", "gap_px", "px_per_mm", "full_opening_angle_deg")}))
 
 
 if __name__ == "__main__":
     main(sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4]) if len(sys.argv) > 4 else None,
-         sys.argv[5] if len(sys.argv) > 5 else None)
+         sys.argv[5] if len(sys.argv) > 5 else None, float(sys.argv[6]) if len(sys.argv) > 6 else None)

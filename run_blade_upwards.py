@@ -59,6 +59,7 @@ CLOSE_R = 3
 FREQ_MAX_HZ = 20_000            # fourier: do not discard the kHz band (default 500 Hz)
 LOCAL_VEL_N = 10
 GAP_PX_PLAUSIBLE = (12.0, 45.0)  # outside this the calibration is reported as failed
+ANGLE_TOL_DEG = 5.0             # full opening vs 2 x folder angle: flag beyond this
 KNOWN_LATTICE = (list(range(1, 122, 8)), list(range(11, 124, 16)))
 # independent cross-check only (hand-marked on Argon Re2250 t1 by the collaborator's LeadArc tool)
 ALEX_GAP_PX = 33.1119129345809
@@ -156,18 +157,30 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
     pxmm = cal["px_per_mm"]
     edges = cal_dir / (p.stem + "_edges.npz")
     meta["calibration"]["alex_gap_px_crosscheck"] = ALEX_GAP_PX
+    # the folder label (45 deg per blade from vertical = 90 deg full opening) is an independent check on
+    # the blade loci; flagged (not stopped) because a two-band blade can tilt a RANSAC line by a few deg
+    meta["calibration"]["angle_flag"] = abs(cal["full_opening_angle_deg"] - 2 * (meta["angle_deg"] or 45)) > ANGLE_TOL_DEG
     save()
 
     # 3. analyze windows in parallel
     starts = list(range(0, src.n, CHUNK))
     chunk_dirs = [od / "chunks" / f"c{k:02d}" for k in range(len(starts))]
 
+    import hashlib
+    stamp = dict(git=meta["git"], T_low=round(T_low, 6), T_high=round(T_high, 6), low_frac=low_frac,
+                 px_per_mm=round(pxmm, 6), edges_md5=hashlib.md5(edges.read_bytes()).hexdigest(),
+                 background_md5=hashlib.md5(bgp.read_bytes()).hexdigest())
+
     def one(k):
         a = starts[k]
         cnt = min(CHUNK, src.n - a)
         cd = chunk_dirs[k]
-        if (cd / "measurements.csv").exists() and not force:
-            return 0.0
+        sp = cd / "chunk_params.json"
+        if (cd / "measurements.csv").exists() and not force and sp.exists() and json.loads(sp.read_text()) == stamp:
+            return 0.0      # reuse ONLY a chunk made with identical code, thresholds and calibration
+        (cd / "measurements.csv").unlink(missing_ok=True)
+        cd.mkdir(parents=True, exist_ok=True)
+        sp.write_text(json.dumps(stamp))
         return run([HERE / "analyze_blade.py", p, "--out-dir", cd, "--fps", f"{src.fps:.0f}",
                     "--frame-start", a, "--frame-count", cnt, "--px-per-mm", f"{pxmm:.5f}",
                     "--background", bgp, "--low-thresh", f"{T_low:.3f}", "--low-frac", low_frac,
@@ -198,6 +211,8 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
     if len(merged) != src.n or not np.array_equal(merged["frame"].to_numpy(), np.arange(src.n)):
         raise RuntimeError(f"merged frames {len(merged)} != header {src.n} or not contiguous")
     mcsv = od / "measurements.csv"
+    for stale in ("measurements_raw.csv", "POST.json"):
+        (od / stale).unlink(missing_ok=True)      # a new merged CSV invalidates any earlier post-stage
     merged.to_csv(mcsv, index=False)
     meta["frames"] = dict(total=int(len(merged)), arc_detected=int((merged["arc_detected"] == 1).sum()),
                           arc_complete=int((merged["arc_complete"] == 1).sum()),
@@ -214,6 +229,7 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
              "--arc-direction", ARC_DIRECTION, "--px-per-mm", f"{pxmm:.5f}", "--fps", fps,
              "--thresh", f"{T_high:.3f}", "--low-thresh", f"{T_low:.3f}", "--low-frac", low_frac,
              "--dark-guard", f"{T_high:.3f}", "--method", "abs", "--threshold", "0.10", "--ext-prominence-frac", "0.10",
+             "--frame-height", src.H, "--gap-row", int(round(cal["gap_row"])),
              "--out", od / "qa_restrike.png"], log)
         run([HERE / "fourier_analysis.py", ev, od, "--px-per-mm", f"{pxmm:.5f}", "--fps", fps,
              "--freq-max", FREQ_MAX_HZ], log)

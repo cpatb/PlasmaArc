@@ -40,7 +40,7 @@ def main():
     assert len(df) == n0 == m["n_frames"]
     df.to_csv(d / "measurements.csv", index=False)
     cal = m["calibration"]
-    gap_row = int(round(0.5 * (cal["fits"]["L"]["tip"][0] + cal["fits"]["R"]["tip"][0])))
+    gap_row = int(round(cal["gap_row"]))
     pxmm, fps = cal["px_per_mm"], m["fps"]
     comp = df["arc_complete"] == 1
     post = dict(eff_width_cut=a.eff_width, arc_width_cut=a.arc_width, gap_row_raw=gap_row, n_frames=n0,
@@ -51,6 +51,9 @@ def main():
         for cmd in ([HERE / "event_velocity.py", d / "measurements.csv", d, "--px-per-mm", f"{pxmm:.5f}",
                      "--fps", f"{fps:.0f}", "--local-vel-n", "10"],
                     [HERE / "qa_restrike.py", "--csv", d / "measurements_all_events.csv",
+                     "--cine", m["cine"], "--background", d / "background_b10.npy",
+                     "--thresh", f"{m['detector']['T_high']:.3f}", "--low-thresh", f"{m['detector']['T_low']:.3f}",
+                     "--low-frac", m["low_frac"], "--dark-guard", f"{m['detector']['T_high']:.3f}",
                      "--arc-direction", "up", "--frame-height", str(m["H"]), "--gap-row", str(gap_row),
                      "--px-per-mm", f"{pxmm:.5f}", "--fps", f"{fps:.0f}", "--method", "abs",
                      "--threshold", "0.10", "--ext-prominence-frac", "0.10", "--out", d / "qa_restrike.png"]):

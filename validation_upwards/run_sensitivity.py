@@ -88,7 +88,7 @@ def one_arm(nom: Path, arm: str, workers: int):
         df["file"] = cine.stem
     assert len(df) == N_FRAMES, (arm, nom, len(df))
     df.to_csv(mcsv, index=False)
-    gap_row = int(round(0.5 * (cal["fits"]["L"]["tip"][0] + cal["fits"]["R"]["tip"][0])))
+    gap_row = int(round(cal["gap_row"]))
     run([HERE / "event_velocity.py", mcsv, od, "--px-per-mm", f"{pxmm:.5f}", "--fps", f"{fps:.0f}",
          "--local-vel-n", 10], log)
     run([HERE / "qa_restrike.py", "--csv", od / "measurements_all_events.csv", "--arc-direction", "up",
