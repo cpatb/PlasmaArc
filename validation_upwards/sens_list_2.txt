@@ -1,0 +1,4 @@
+E:/BladeReactor_Upwards_analysis/runs/Air/45degree_2.4mmGap/Re4063/BLADE_ADCB_Air_Re4063_06mmNozzle_trial1
+E:/BladeReactor_Upwards_analysis/runs/Ar-Air(1_1)/45degree_2.4mmGap/Re4063/BLADE_ADCB_(Argon_Air)_(1-1)_Re4063_06mmNozzle_trial1
+E:/BladeReactor_Upwards_analysis/runs/Argon/45degree_2.4mmGap/Re2250/BLADE_ADCB_Argon_Re2250_06mmNozzle_trial1
+E:/BladeReactor_Upwards_analysis/runs/Argon/45degree_2.4mmGap/Re3156/BLADE_ADCB_Argon_Re3156_06mmNozzle_trial1

@@ -70,6 +70,9 @@ def file_row(d: Path):
         rs = pd.read_csv(rs_p)
         cyc = rs["cycle_frames"][rs["cycle_frames"] > 0] / fps * 1e3
         low = rs[rs["norm_pos"] <= 0.9]       # shallow dips AT the extension peak excluded (possible jitter)
+        # A/B threshold sensitivity straight from norm_pos (re-strikes cluster just above 0.10 at the base)
+        r.update(frac_B_thr005=float((rs["norm_pos"] > 0.05).mean()) if len(rs) else np.nan,
+                 frac_B_thr020=float((rs["norm_pos"] > 0.20).mean()) if len(rs) else np.nan)
         r.update(frac_modeB_excl_peak=float((low["mode"] == "B").mean()) if len(low) else np.nan,
                  n_restrikes_at_peak=int((rs["norm_pos"] > 0.9).sum()))
         r.update(n_restrikes=int(len(rs)), frac_modeB=float((rs["mode"] == "B").mean()) if len(rs) else np.nan,
@@ -101,7 +104,7 @@ D = D[sg]
 print(f"after separation-gate filter: {len(D)}")
 
 metrics = ["frac_complete", "arc_len_mm_med", "tip_height_above_gap_mm_med", "tip_height_above_gap_mm_p90", "event_rate_hz", "event_dur_ms_med",
-           "event_vel_ms_med", "local_vel_ms_med", "n_restrikes", "frac_modeB", "frac_modeB_excl_peak", "cycle_ms_mean",
+           "event_vel_ms_med", "local_vel_ms_med", "n_restrikes", "frac_modeB", "frac_B_thr005", "frac_B_thr020", "frac_modeB_excl_peak", "cycle_ms_mean",
            "px_per_mm", "opening_deg"]
 metrics = [k for k in metrics if k in D]
 g = D.groupby(["gas", "Re"])
