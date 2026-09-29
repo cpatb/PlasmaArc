@@ -252,9 +252,10 @@ def main():
     ap.add_argument("--low-frac", type=float, default=LOW_FRAC)
     ap.add_argument("--high-scale", type=float, default=1.0)
     a = ap.parse_args()
-    # trial-major order: every condition's trial 1 before any trial 2, so a partial batch covers all
+    # trial-major, then Re, then gas: every condition's trial 1 before any trial 2, and the gases
+    # interleaved, so a partial batch covers every gas early
     files = sorted(DATA_ROOT.rglob("*.cine"),
-                   key=lambda f: (parse_condition(f)["trial"] or 0, parse_condition(f)["gas"], parse_condition(f)["Re"] or 0))
+                   key=lambda f: (parse_condition(f)["trial"] or 0, parse_condition(f)["Re"] or 0, parse_condition(f)["gas"]))
     if a.list_file:
         files = [Path(x.strip()) for x in Path(a.list_file).read_text().splitlines() if x.strip()]
     if a.match:
