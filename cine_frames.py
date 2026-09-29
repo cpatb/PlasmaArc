@@ -173,7 +173,8 @@ class CineFrames:
         self.background = bg
         self._cache = None
 
-    CACHE_FRAMES = 1000   # sequential per-frame access decodes this many at once
+    CACHE_FRAMES = 250    # sequential per-frame access decodes this many at once (was 1000: ~1 GB/worker
+                          # with unpack temporaries; the harness reaped the batch for low memory 2026-09-29)
 
     def frame(self, i: int) -> np.ndarray:
         """Single frame. Sequential access (i == previous + 1) decodes CACHE_FRAMES ahead;
