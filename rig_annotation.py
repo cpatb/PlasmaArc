@@ -142,11 +142,43 @@ def straight_blades(ann: dict, shape) -> dict:
                 ts.append((0 - f[ax]) / u[ax])
         t_max = max(min(ts), 0.0)
         out["AB"[k]] = densify(np.array([f, f + t_max * u]))
-    out.update(A_tip=feet[0], B_tip=feet[1],
+    out.update(A_tip=feet[0], B_tip=feet[1], gap_end_A=eA, gap_end_B=eB, dir_A=dirs[0], dir_B=dirs[1],
                gap_end_offsets_px=[float(perp(eA, *lines[0])), float(perp(eB, *lines[1]))],
                opening_deg=float(np.degrees(np.arccos(np.clip(dirs[0] @ dirs[1], -1, 1)))),
                cutoff_sep_px=float(np.hypot(*(feet[0] - feet[1]))), ab_swapped=bool(swapped))
     return out
+
+
+AVG_SEGMENT_PX = 50.0   # length of the synthetic edge segment written for an averaged annotation (only its
+                        # direction is used downstream; straight_blades extends it to the border)
+
+
+def average_straight(anns: list, shape) -> dict:
+    """Average several annotations of ONE fixed straight-blade rig into one annotation.
+
+    Per member (after straight_blades: A = left blade): the drawn gap-line end on each blade and each blade's
+    outward direction. Averaged: each gap end = mean of the members' ends; each direction = normalised mean of
+    the members' unit directions. The result is an annotation dict whose gap line joins the mean ends and whose
+    edges are short segments from those ends along the mean directions, so straight_blades(result) cuts off at
+    exactly the mean ends. Members must share image shape and gap_mm (checked by the caller)."""
+    if not anns:
+        raise ValueError("nothing to average")
+    sbs = [straight_blades(a, shape) for a in anns]
+    eA = np.mean([s["gap_end_A"] for s in sbs], 0)
+    eB = np.mean([s["gap_end_B"] for s in sbs], 0)
+    uA = np.sum([s["dir_A"] for s in sbs], 0)
+    uB = np.sum([s["dir_B"] for s in sbs], 0)
+    uA, uB = uA / np.linalg.norm(uA), uB / np.linalg.norm(uB)
+    gaps = np.array([np.hypot(*(s["gap_end_B"] - s["gap_end_A"])) for s in sbs])
+    return dict(schema=SCHEMA, gap_mm=anns[0]["gap_mm"], image_shape=list(shape),
+                electrode_A=[eA.tolist(), (eA + AVG_SEGMENT_PX * uA).tolist()],
+                electrode_B=[eB.tolist(), (eB + AVG_SEGMENT_PX * uB).tolist()],
+                gap_line=[eA.tolist(), eB.tolist()],
+                members=dict(n=len(anns), gap_px=gaps.tolist(),
+                             gap_px_mean=float(gaps.mean()),
+                             gap_px_sd=float(gaps.std(ddof=1)) if len(gaps) > 1 else float("nan"),
+                             gap_px_sem=float(gaps.std(ddof=1) / np.sqrt(len(gaps))) if len(gaps) > 1 else float("nan"),
+                             opening_deg=[s["opening_deg"] for s in sbs]))
 
 
 def edges_npz(ann: dict, path, shape=None) -> Path:

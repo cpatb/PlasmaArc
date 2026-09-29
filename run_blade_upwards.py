@@ -84,63 +84,102 @@ def out_dir_for(p: Path, tag: str = "", annotated: bool = False) -> Path:
     return base / p.stem
 
 
-def find_annotation(p: Path):
-    """The rig_annotate JSON whose `cines` list contains this recording. Returns (path, None) or (None, reason)."""
-    hits = []
+MEMBER_GAP_FLAG_FRAC = 0.10   # flag (not drop) a member whose gap is > 10 % from the members' median
+
+
+def condition_of(path) -> tuple | None:
+    """(gas folder, angle/gap folder) of a recording under DATA_ROOT, e.g. ('Air', '45degree_2.4mmGap')."""
+    try:
+        parts = Path(path).resolve().relative_to(DATA_ROOT.resolve()).parts
+    except ValueError:
+        return None
+    return tuple(parts[:2]) if len(parts) >= 3 else None
+
+
+def find_annotations(p: Path):
+    """Every rig_annotate JSON in ANNOT_DIR drawn on a recording of the SAME condition (gas + angle folder) as
+    p. The setup is fixed within a condition, so all of them are averaged and used for every recording in it.
+    Returns (paths, problems)."""
+    key = condition_of(p)
+    hits, problems = [], []
     for j in sorted(ANNOT_DIR.glob("rig_*.json")):
         try:
             cines = json.loads(j.read_text(encoding="utf-8")).get("cines", [])
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as e:
+            problems.append(f"{j.name} unreadable: {e}")
             continue
-        if any(Path(c).stem == p.stem for c in cines):
+        conds = {condition_of(c) for c in cines}
+        if key in conds:
+            if len(conds) > 1:
+                problems.append(f"{j.name} was drawn on recordings from {len(conds)} conditions {sorted(map(str, conds))}")
             hits.append(j)
     if not hits:
-        return None, f"no hand annotation for {p.stem} in {ANNOT_DIR}"
-    if len(hits) > 1:
-        return None, f"{len(hits)} annotations claim {p.stem}: {[h.name for h in hits]}"
-    return hits[0], None
+        problems.append(f"no hand annotation for condition {key} in {ANNOT_DIR}")
+    return hits, problems
+
+
+def annotation_md5(paths) -> str:
+    """One hash over all member files: adding, removing or re-saving any member changes it."""
+    import hashlib
+    h = hashlib.md5()
+    for q in sorted(paths):
+        h.update(Path(q).name.encode())
+        h.update(Path(q).read_bytes())
+    return h.hexdigest()
 
 
 def annotation_calibration(p: Path, H: int, W: int):
-    """Hand-annotated gap and electrode edges for one recording.
-
-    Returns (cal, problems, flags): `problems` non-empty means the file must STOP. Everything is recomputed
-    from the drawn lines by rig_annotation.load, never read from stored numbers."""
-    import hashlib
-    path, why = find_annotation(p)
-    if path is None:
-        return None, [why], []
-    try:
-        ann = ra.load(path)
-    except (ValueError, KeyError) as e:
-        return None, [f"{path.name} is incomplete or unreadable: {e}"], []
-    d = ann["derived"]
-    problems, flags = [], []
-    if not (ann.get("electrode_A") and ann.get("electrode_B")):
-        problems.append("annotation has no electrode A and/or B edge")
-    if list(ann.get("image_shape", [])) != [H, W]:
-        problems.append(f"annotation drawn on a {ann.get('image_shape')} image, recording is {[H, W]}")
+    """Hand-annotated gap and electrode edges for one recording: the AVERAGE of every annotation of its
+    condition (rig_annotation.average_straight), BLADE edges as straight lines from the gap cutoff to the image
+    border. Returns (cal, problems, flags): `problems` non-empty means the file must STOP. Everything is
+    recomputed from the drawn lines, never read from stored numbers."""
+    paths, problems = find_annotations(p)
+    if problems:
+        return None, problems, []
+    anns, flags = [], []
     gap_folder = parse_condition(p)["gap_mm_folder"]
-    if gap_folder is not None and not np.isclose(ann["gap_mm"], gap_folder, rtol=0, atol=1e-9):
-        problems.append(f"annotation gap_mm {ann['gap_mm']} != folder {gap_folder} mm")
+    for q in paths:
+        try:
+            a = ra.load(q)
+        except (ValueError, KeyError) as e:
+            problems.append(f"{q.name} is incomplete or unreadable: {e}")
+            continue
+        if not (a.get("electrode_A") and a.get("electrode_B") and a.get("gap_line")):
+            problems.append(f"{q.name} needs both electrode edges and a gap line")
+        if list(a.get("image_shape", [])) != [H, W]:
+            problems.append(f"{q.name} drawn on a {a.get('image_shape')} image, recording is {[H, W]}")
+        if gap_folder is not None and not np.isclose(a["gap_mm"], gap_folder, rtol=0, atol=1e-9):
+            problems.append(f"{q.name} gap_mm {a['gap_mm']} != folder {gap_folder} mm")
+        try:
+            sb_m = ra.straight_blades(a, (H, W))
+        except ValueError as e:
+            problems.append(f"{q.name}: {e}")
+            continue
+        for k, off in zip("AB", sb_m["gap_end_offsets_px"]):
+            if off > ELEC_TOL_PX:
+                flags.append(f"{q.name}: gap-line end {off:.1f} px off the blade-{k} line (> {ELEC_TOL_PX} px)")
+        anns.append(a)
+    if problems:
+        return None, problems, flags
+    avg = ra.average_straight(anns, (H, W))
+    d = ra.geometry(avg)
+    sb = ra.straight_blades(avg, (H, W))
+    mem = avg["members"]
+    med = float(np.median(mem["gap_px"]))
+    for q, g in zip(paths, mem["gap_px"]):
+        if abs(g - med) > MEMBER_GAP_FLAG_FRAC * med:
+            flags.append(f"{q.name}: gap {g:.2f} px is {100 * (g / med - 1):+.0f} % from the members' median "
+                         f"{med:.2f} px (kept in the average)")
     if not (GAP_PX_PLAUSIBLE[0] <= d["gap_px"] <= GAP_PX_PLAUSIBLE[1]):
-        problems.append(f"annotated gap {d['gap_px']:.1f} px outside {GAP_PX_PLAUSIBLE}")
-    # BLADE electrodes are straight: the drawn edges fix only each LINE, extended from the gap cutoff to the
-    # image border (rig_annotation.straight_blades)
-    try:
-        sb = ra.straight_blades(ann, (H, W))
-    except ValueError as e:
-        return None, problems + [str(e)], flags
-    for k, off in zip("AB", sb["gap_end_offsets_px"]):
-        if off > ELEC_TOL_PX:
-            flags.append(f"gap-line end {off:.1f} px off the blade-{k} line (> {ELEC_TOL_PX} px)")
+        problems.append(f"averaged gap {d['gap_px']:.1f} px outside {GAP_PX_PLAUSIBLE}")
     cal = dict(source="hand annotation", edge_model="straight lines from the gap cutoff to the image border",
-               annotation=str(path),
-               annotation_md5=hashlib.md5(path.read_bytes()).hexdigest(), annotator=ann.get("annotator"),
-               annotation_saved=ann.get("saved"), gap_source=d["gap_source"], gap_mm=ann["gap_mm"],
+               averaging="mean gap-line ends and mean blade directions over every annotation of the condition",
+               condition=list(condition_of(p)), annotations=[str(q) for q in paths],
+               annotation_md5=annotation_md5(paths), members=mem,
+               px_per_mm_sem=mem["gap_px_sem"] / avg["gap_mm"], averaged_annotation=avg,
+               gap_source=d["gap_source"], gap_mm=avg["gap_mm"],
                gap_px=d["gap_px"], px_per_mm=d["px_per_mm"], gap_ends=d["gap_ends"], gap_row=d["gap_row"],
-               gap_end_offsets_px=sb["gap_end_offsets_px"], cutoff_sep_px=sb["cutoff_sep_px"],
-               ab_swapped_in_drawing=sb["ab_swapped"], full_opening_angle_deg=sb["opening_deg"],
+               cutoff_sep_px=sb["cutoff_sep_px"], full_opening_angle_deg=sb["opening_deg"],
                # the attachment test's two point sets ARE the extended edges; they are closest at the cutoffs:
                cloud_sep_min_px=sb["cutoff_sep_px"], gap_ransac_tips_px=float("nan"),
                flags=flags, status="OK" if not problems else "FAIL: " + "; ".join(problems))
@@ -167,13 +206,12 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
     done = od / "DONE.json"
     if done.exists() and not force:
         prev = json.loads(done.read_text())
-        a_path, _ = find_annotation(p) if annotated else (None, None)
-        import hashlib
-        cur_md5 = hashlib.md5(a_path.read_bytes()).hexdigest() if a_path else None
+        a_paths, a_prob = find_annotations(p) if annotated else ([], ["n/a"])
+        cur_md5 = annotation_md5(a_paths) if not a_prob else None
         if not annotated or prev.get("calibration", {}).get("annotation_md5") == cur_md5:
             print(f"[skip] {p.name} (DONE)", flush=True)
             return prev
-        print(f"[redo] {p.name}: its hand annotation changed since the last run", flush=True)
+        print(f"[redo] {p.name}: its condition's hand annotations changed since the last run", flush=True)
     t0 = time.time()
     meta = dict(cine=str(p), out=str(od), tag=tag, **parse_condition(p),
                 started=time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -252,7 +290,7 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
         hcal["clean_arches"] = cal.get("clean_arches")
         cal = hcal
         meta["calibration"] = cal
-        edges = ra.edges_npz(ra.load(cal["annotation"]), cal_dir / (p.stem + "_edges_annotated.npz"),
+        edges = ra.edges_npz(cal["averaged_annotation"], cal_dir / (p.stem + "_edges_annotated.npz"),
                              shape=(src.H, src.W))
         for fl in flags:
             print(f"[flag] {p.name}: {fl}", flush=True)
@@ -388,21 +426,27 @@ def main():
     if a.match:
         files = [f for f in files if a.match in f.stem]
     if a.check_annotations:
-        n_ok = 0
+        n_ok, seen = 0, {}
         for f in files:
             s_ = cf.open_cine(str(f))
-            H, W = s_.H, s_.W
-            cal, problems, flags = annotation_calibration(f, H, W)
+            cal, problems, flags = annotation_calibration(f, s_.H, s_.W)
+            key = condition_of(f)
             if problems:
                 print(f"MISSING/BAD  {f.stem}: {'; '.join(problems)}")
                 continue
             n_ok += 1
-            print(f"ok           {f.stem}: {cal['px_per_mm']:.3f} px/mm (gap {cal['gap_px']:.2f} px, "
-                  f"gap ends off their lines {cal['gap_end_offsets_px'][0]:.1f}/{cal['gap_end_offsets_px'][1]:.1f} px, "
-                  f"opening {cal['full_opening_angle_deg']:.1f} deg"
-                  + (", A/B drawn swapped (fixed)" if cal['ab_swapped_in_drawing'] else "") + ")"
-                  + ("".join(f"\n               FLAG: {fl}" for fl in flags)))
-        print(f"{n_ok} of {len(files)} recordings have a usable hand annotation")
+            if key not in seen:     # print each condition's average once, with its members
+                seen[key] = cal
+                m = cal["members"]
+                print(f"\n{key[0]} / {key[1]}: AVERAGE of {m['n']} annotation(s): {cal['px_per_mm']:.3f} "
+                      f"+/- {cal['px_per_mm_sem']:.3f} px/mm (sem)  gap {cal['gap_px']:.2f} px "
+                      f"(member sd {m['gap_px_sd']:.2f} px)  opening {cal['full_opening_angle_deg']:.1f} deg")
+                for q, g, o in zip(cal["annotations"], m["gap_px"], m["opening_deg"]):
+                    print(f"    member {Path(q).name}: gap {g:.2f} px, opening {o:.1f} deg")
+                for fl in flags:
+                    print(f"    FLAG: {fl}")
+            print(f"ok           {f.stem}  <- {key[0]} / {key[1]} average")
+        print(f"\n{n_ok} of {len(files)} recordings have a usable hand annotation")
         return
     if a.list or not (a.all or a.match or a.list_file):
         for f in files:
