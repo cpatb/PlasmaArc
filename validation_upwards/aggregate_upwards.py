@@ -27,14 +27,15 @@ def file_row(d: Path):
         return r
     det, cal = m["detector"], m["calibration"]
     fps = m["fps"]
-    pxmm = cal["px_per_mm"]
+    pxmm = post.get("px_per_mm_used", cal["px_per_mm"])     # pooled scale when post-staged
     r.update(N=det["N"], smear_S=det["smear_S"], T_low=det["T_low"], T_high=det["T_high"],
              sat_frames_of_2000=det["sat_frames"], b10_max=det["b10_max"],
-             gap_px=cal["gap_px"], px_per_mm=pxmm, opening_deg=cal["full_opening_angle_deg"],
+             gap_px=cal["gap_px"], px_per_mm=pxmm, px_per_mm_file=cal["px_per_mm"], opening_deg=cal["full_opening_angle_deg"],
              gapA_r=cal["gap_ends"][0][0], gapA_c=cal["gap_ends"][0][1],
              gapB_r=cal["gap_ends"][1][0], gapB_c=cal["gap_ends"][1][1],
              gap_ransac_tips_px=cal["gap_ransac_tips_px"], cloud_sep_min_px=cal["cloud_sep_min_px"],
-             clean_arches=cal["clean_arches"])
+             clean_arches=cal["clean_arches"],
+             sep_gate_pass=bool(cal["cloud_sep_min_px"] - 2 * 4 >= 10))   # review 2 (3): sep - 2 x ELEC_TOL >= ARCH_MIN_FOOT_SEP
     df = pd.read_csv(d / "measurements.csv", usecols=["frame", "arc_detected", "arc_complete", "is_flash", "area_px",
                                                         "arc_length_px", "arc_width_px", "arc_tip_row"])
     assert len(df) == m["n_frames"], (d, len(df))
@@ -91,6 +92,9 @@ np_ = int((D["post_status"] != "DONE").sum())
 print(f"  of which WITHOUT post-stage (flash cut + physical gap row): {np_}")
 D = D[D["post_status"] == "DONE"]
 print(f"after post-stage filter: {len(D)}")
+print("  failing the separation gate (sep - 8 < 10 px):", D.loc[~D["sep_gate_pass"], "stem"].tolist())
+D = D[D["sep_gate_pass"]]
+print(f"after separation-gate filter: {len(D)}")
 
 metrics = ["frac_complete", "arc_len_mm_med", "tip_height_above_gap_mm_med", "tip_height_above_gap_mm_p90", "event_rate_hz", "event_dur_ms_med",
            "event_vel_ms_med", "local_vel_ms_med", "n_restrikes", "frac_modeB", "cycle_ms_mean",

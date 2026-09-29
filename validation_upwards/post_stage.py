@@ -25,6 +25,8 @@ def main():
     ap.add_argument("run_dir")
     ap.add_argument("--eff-width", type=float, required=True)
     ap.add_argument("--arc-width", type=float, default=0.0)
+    ap.add_argument("--px-per-mm", type=float, default=None,
+                    help="override (the pooled dataset scale); default: this file's own calibration")
     a = ap.parse_args()
     d = Path(a.run_dir)
     m = json.loads((d / "run_metadata.json").read_text())
@@ -41,9 +43,10 @@ def main():
     df.to_csv(d / "measurements.csv", index=False)
     cal = m["calibration"]
     gap_row = int(round(cal["gap_row"]))
-    pxmm, fps = cal["px_per_mm"], m["fps"]
+    pxmm, fps = (a.px_per_mm or cal["px_per_mm"]), m["fps"]
     comp = df["arc_complete"] == 1
     post = dict(eff_width_cut=a.eff_width, arc_width_cut=a.arc_width, gap_row_raw=gap_row, n_frames=n0,
+                px_per_mm_used=pxmm, px_per_mm_file=cal["px_per_mm"],
                 complete=int(comp.sum()), complete_flash=int((comp & (df["is_flash"] == 1)).sum()))
     log = d / "post_stage.log"
     py = [sys.executable, "-X", "utf8"]
