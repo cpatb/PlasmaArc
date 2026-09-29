@@ -40,7 +40,7 @@ keys = [("local_vel_ms_med", "local tip vel (m/s)"), ("arc_len_mm_med", "arc len
 T = D.groupby(["gas", "Re"]).agg(n=("stem", "size"), **{lab: (k, "mean") for k, lab in keys}).reset_index()
 print(md(T.round(3)), "\n")
 
-print("### Trial-to-trial reproducibility (conditions with 3 trials): range over trials\n")
+print("### Trial-to-trial reproducibility (conditions with >= 2 trials): range over trials\n")
 rep = []
 for (g, re_), d in D.groupby(["gas", "Re"]):
     if len(d) < 2:
