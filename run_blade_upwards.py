@@ -57,6 +57,12 @@ LOW_K, HIGH_K = 1.2, 4.0        # DECISION 23:48 / AMENDMENT 3 (OVERNIGHT_LOG)
 LOW_FRAC = 0.05                 # AMENDMENT 4: low threshold >= 5 % of the frame peak (Argon glow, V-H3)
 MIN_ARC_PX = 22                 # speckle floor (px^2); tiny next to any arc mask (~100-900 px^2)
 ELEC_TOL_PX = 4                 # attachment tolerance to the edge clouds (validated visually)
+# Against HAND-drawn metal edges the tolerance must cover the skeleton's inset: a skeleton end stops inside the
+# arc body, ~half the arc width (median 4.4 px) short of the metal. Measured 2026-09-29 on Air Re2250 t1: of the
+# frames the automatic-cloud run called complete, the larger end-to-hand-line distance has percentiles
+# 50/75/90/99 = 2.9/4.2/5.5/7.1 px, so 4 px rejected 32 %. 7 px covers the 99th percentile and stays well under
+# half the ~22 px gap. Author's choice (2026-09-29).
+HAND_ELEC_TOL_PX = 7
 CLOSE_R = 3
 FREQ_MAX_HZ = 20_000            # fourier: do not discard the kHz band (default 500 Hz)
 LOCAL_VEL_N = 10
@@ -232,7 +238,9 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
         prev = json.loads(done.read_text())
         a_paths, a_prob = find_annotations(p) if annotated else ([], ["n/a"])
         cur_md5 = annotation_md5(a_paths) if not a_prob else None
-        if not annotated or prev.get("calibration", {}).get("annotation_md5") == cur_md5:
+        same_tol = prev.get("elec_tol_px", ELEC_TOL_PX) == (HAND_ELEC_TOL_PX if annotated else ELEC_TOL_PX)
+        if prev.get("status") == "NO_GLIDING" or not annotated or (
+                same_tol and prev.get("calibration", {}).get("annotation_md5") == cur_md5):
             print(f"[skip] {p.name} (DONE)", flush=True)
             return prev
         print(f"[redo] {p.name}: its condition's hand annotations changed since the last run", flush=True)
@@ -347,7 +355,10 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
     chunk_dirs = [od / "chunks" / f"c{k:02d}" for k in range(len(starts))]
 
     import hashlib
+    elec_tol = HAND_ELEC_TOL_PX if annotated else ELEC_TOL_PX
+    meta["elec_tol_px"] = elec_tol
     stamp = dict(git=meta["git"], T_low=round(T_low, 6), T_high=round(T_high, 6), low_frac=low_frac,
+                 elec_tol_px=elec_tol,
                  px_per_mm=round(pxmm, 6), edges_md5=hashlib.md5(edges.read_bytes()).hexdigest(),
                  background_md5=hashlib.md5(bgp.read_bytes()).hexdigest())
 
@@ -367,7 +378,7 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
                     "--bright-thresh", f"{T_high:.3f}", "--dark-guard", f"{T_high:.3f}",
                     "--min-arc-px", MIN_ARC_PX, "--max-arc-px", 10**9, "--close-radius", CLOSE_R,
                     "--flash-eff-width", 0, "--flash-arc-width", 0,
-                    "--electrode-edges", edges, "--elec-tol-px", ELEC_TOL_PX,
+                    "--electrode-edges", edges, "--elec-tol-px", elec_tol,
                     "--arc-direction", ARC_DIRECTION, "--qa-interval", 2500],
                    od / f"analyze_c{k:02d}.log")
 

@@ -48,7 +48,8 @@ def file_row(d: Path):
              gapB_r=cal["gap_ends"][1][0], gapB_c=cal["gap_ends"][1][1],
              gap_ransac_tips_px=cal["gap_ransac_tips_px"], cloud_sep_min_px=cal["cloud_sep_min_px"],
              clean_arches=cal["clean_arches"],
-             sep_gate_pass=bool(cal["cloud_sep_min_px"] - 2 * 4 >= 10))   # review 2 (3): sep - 2 x ELEC_TOL >= ARCH_MIN_FOOT_SEP
+             # review 2 (3): sep - 2 x ELEC_TOL >= ARCH_MIN_FOOT_SEP, at the tolerance the run actually used
+             sep_gate_pass=bool(cal["cloud_sep_min_px"] - 2 * m.get("elec_tol_px", 4) >= 10))
     df = pd.read_csv(d / "measurements.csv", usecols=["frame", "arc_detected", "arc_complete", "is_flash", "area_px",
                                                         "arc_length_px", "arc_width_px", "arc_tip_row"])
     assert len(df) == m["n_frames"], (d, len(df))
