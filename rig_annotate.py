@@ -16,10 +16,20 @@ Save: Shift+S at any time, and automatically when the window closes. Re-running 
 --out reopens the saved drawing for editing. Output: <out>.json (see rig_annotation.py for the
 schema) and <out>_edges.npz (the file analyze_blade --electrode-edges reads).
 
-Reference layers (toggle in the layer list; adjust contrast with the slider):
+Reference layers (toggle in the layer list; adjust contrast with the slider). All are over --frames frames
+spread across the record unless named otherwise:
+  temporal std  -- (shown first) per-pixel standard deviation: the attachment bands along both blades stand out
+                   cleanly even in Argon, where the glow hides everything else
+  CLAHE(mean)   -- the mean after adaptive histogram equalisation (skimage equalize_adapthist)
+  log(mean)     -- the mean on a log scale: blade silhouettes under the glow (clearest in Air)
+  mean          -- plain per-pixel mean
+  mean first N  -- mean of the first --first-n frames of each video (early arcs only)
   median  -- temporal median: electrodes silhouetted against gas glow, where there is glow
   p99     -- 99th percentile per pixel: the envelope the arc sweeps, i.e. where it attaches
   max     -- brightest value per pixel
+Where the arc lights a BAND several px wide along a blade, trace the band's edge FACING THE GAP (upper/inner
+side) every time -- that is the convention of the existing annotations; tracing the outer side instead moves
+the gap end by the band width (~6 px).
   <file> max -- one per input cine: if these do not line up, the rig moved between files
   pipeline attachment -- if a run_blade_upwards calibration exists for the file (optional)
 """
@@ -51,12 +61,27 @@ def find_cines(paths, max_files):
     return files
 
 
-def reference_images(cine, n_frames):
-    """median, p99 and max over n_frames spread across the record (defect-corrected, 12-bit)."""
+REF_KEYS = ("temporal std", "CLAHE(mean)", "log(mean)", "mean", "mean first N", "median", "p99", "max")
+CLAHE_CLIP = 0.02           # skimage equalize_adapthist clip_limit (its default is 0.01; 0.02 lifts faint bands)
+
+
+def _norm01(im, lo=0.5, hi=99.5):
+    a, b = np.percentile(im, [lo, hi])
+    return np.clip((im - a) / max(b - a, 1e-9), 0, 1)
+
+
+def reference_images(cine, n_frames, first_n):
+    """Per-pixel statistics over n_frames spread across the record, plus the mean of the first first_n frames
+    (defect-corrected 12-bit DN)."""
+    from skimage import exposure
     src = cf.open_cine(str(cine))
     idx = np.linspace(0, src.n - 1, n_frames).astype(int)
     fr = np.stack([src.frame(int(i)) for i in idx]).astype(np.float32)
-    return dict(median=np.median(fr, 0), p99=np.percentile(fr, 99, axis=0), max=fr.max(0))
+    first = np.stack([src.frame(i) for i in range(min(first_n, src.n))]).astype(np.float32)
+    mean = fr.mean(0)
+    return {"temporal std": fr.std(0), "CLAHE(mean)": exposure.equalize_adapthist(_norm01(mean), clip_limit=CLAHE_CLIP),
+            "log(mean)": np.log1p(mean), "mean": mean, "mean first N": first.mean(0),
+            "median": np.median(fr, 0), "p99": np.percentile(fr, 99, axis=0), "max": fr.max(0)}
 
 
 def gap_mm_from_path(files):
@@ -86,6 +111,7 @@ def main():
     ap.add_argument("--out", default=None, help="output .json (default: ./rig_annotations/rig_<first cine stem>.json)")
     ap.add_argument("--max-files", type=int, default=4, help="cines sampled from a folder")
     ap.add_argument("--frames", type=int, default=1500, help="frames sampled per cine for the reference images")
+    ap.add_argument("--first-n", type=int, default=2000, help="frames averaged for the 'mean first N' layer")
     ap.add_argument("--selftest", action="store_true",
                     help="build the viewer off-screen, draw a known V annotation, save, exit (for testing)")
     ap.add_argument("--overlay-root", default=r"E:\BladeReactor_Upwards_analysis\runs",
@@ -105,15 +131,16 @@ def main():
     refs = []
     for f in files:
         print("  reference images:", f.name, flush=True)
-        refs.append(reference_images(f, a.frames))
-    stackd = {k: np.median(np.stack([r[k] for r in refs]), 0) for k in ("median", "p99", "max")}
+        refs.append(reference_images(f, a.frames, a.first_n))
+    stackd = {k: np.median(np.stack([r[k] for r in refs]), 0) for k in REF_KEYS}
 
     prev = json.loads(out.read_text()) if out.exists() else {}
     import napari
     v = napari.Viewer(title=f"rig_annotate  |  gap {gap_mm} mm  |  Shift+S saves, closing saves", show=not a.selftest)
-    for k, vis in (("max", False), ("p99", True), ("median", False)):
+    for k in reversed(REF_KEYS):            # napari lists the LAST added layer on top
         im = stackd[k]
-        v.add_image(im, name=k, colormap="gray", visible=vis, gamma=0.5,
+        name = f"mean first {a.first_n}" if k == "mean first N" else k
+        v.add_image(im, name=name, colormap="gray", visible=(k == "temporal std"), gamma=0.5,
                     contrast_limits=[float(np.percentile(im, 1)), float(np.percentile(im, 99.9)) + 1])
     for f, r in zip(files, refs):
         v.add_image(r["max"], name=f"{f.stem} max", colormap="magma", visible=False, blending="additive", gamma=0.5)
@@ -140,6 +167,10 @@ def main():
 
     def do_save(*_):
         ann = collect()
+        if not (ann["electrode_A"] or ann["electrode_B"] or ann["gap_line"]):
+            msg = f"nothing drawn: {out.name} NOT written"
+            print(msg, flush=True)
+            return msg
         try:
             ann = ra.save(ann, out)
             d = ann["derived"]
