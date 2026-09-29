@@ -69,6 +69,9 @@ def file_row(d: Path):
     if rs_p.exists():
         rs = pd.read_csv(rs_p)
         cyc = rs["cycle_frames"][rs["cycle_frames"] > 0] / fps * 1e3
+        low = rs[rs["norm_pos"] <= 0.9]       # shallow dips AT the extension peak excluded (possible jitter)
+        r.update(frac_modeB_excl_peak=float((low["mode"] == "B").mean()) if len(low) else np.nan,
+                 n_restrikes_at_peak=int((rs["norm_pos"] > 0.9).sum()))
         r.update(n_restrikes=int(len(rs)), frac_modeB=float((rs["mode"] == "B").mean()) if len(rs) else np.nan,
                  cycle_ms_mean=float(cyc.mean()) if len(cyc) else np.nan,
                  cycle_ms_med=float(cyc.median()) if len(cyc) else np.nan)
@@ -92,12 +95,13 @@ np_ = int((D["post_status"] != "DONE").sum())
 print(f"  of which WITHOUT post-stage (flash cut + physical gap row): {np_}")
 D = D[D["post_status"] == "DONE"]
 print(f"after post-stage filter: {len(D)}")
-print("  failing the separation gate (sep - 8 < 10 px):", D.loc[~D["sep_gate_pass"], "stem"].tolist())
-D = D[D["sep_gate_pass"]]
+sg = D["sep_gate_pass"].fillna(False).astype(bool)
+print("  failing the separation gate (sep - 8 < 10 px):", D.loc[~sg, "stem"].tolist())
+D = D[sg]
 print(f"after separation-gate filter: {len(D)}")
 
 metrics = ["frac_complete", "arc_len_mm_med", "tip_height_above_gap_mm_med", "tip_height_above_gap_mm_p90", "event_rate_hz", "event_dur_ms_med",
-           "event_vel_ms_med", "local_vel_ms_med", "n_restrikes", "frac_modeB", "cycle_ms_mean",
+           "event_vel_ms_med", "local_vel_ms_med", "n_restrikes", "frac_modeB", "frac_modeB_excl_peak", "cycle_ms_mean",
            "px_per_mm", "opening_deg"]
 metrics = [k for k in metrics if k in D]
 g = D.groupby(["gas", "Re"])
