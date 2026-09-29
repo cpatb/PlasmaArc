@@ -13,6 +13,7 @@ import pandas as pd
 ROOT, OUT = Path(sys.argv[1]), Path(sys.argv[2])
 OUT.mkdir(parents=True, exist_ok=True)
 UPWARD_JUMP_MAX_PX = 10     # V-H4': p99 of frame-to-frame tip GROWTH above this = tip jumping
+POOLED_PX_PER_MM = 23.00 / 2.4   # OVERNIGHT_LOG "POOLED SCALE": median of 26 calibration gaps
 
 
 def file_row(d: Path):
@@ -27,7 +28,14 @@ def file_row(d: Path):
         return r
     det, cal = m["detector"], m["calibration"]
     fps = m["fps"]
-    pxmm = post.get("px_per_mm_used", cal["px_per_mm"])     # pooled scale when post-staged
+    # ONE pooled scale for every mm/m/s number. event_velocity ran at px_ev (the file's own scale, or the pooled
+    # one if post-staged); its m/s outputs are exactly linear in 1/px_per_mm (verified 2026-09-29: ratios 1.0435 vs
+    # 1.0435 expected, max dev 7e-4 = print rounding), so they are rescaled by px_ev / POOLED.
+    pxmm = POOLED_PX_PER_MM
+    px_ev = post.get("px_per_mm_used", cal["px_per_mm"])
+    vscale = px_ev / POOLED_PX_PER_MM
+    summ = (d / "re_strikes_qa_summary.txt").read_text(encoding="utf-8") if (d / "re_strikes_qa_summary.txt").exists() else ""
+    r["physical_gap_anchor"] = "PHYSICAL gap" in summ
     r.update(N=det["N"], smear_S=det["smear_S"], T_low=det["T_low"], T_high=det["T_high"],
              sat_frames_of_2000=det["sat_frames"], b10_max=det["b10_max"],
              gap_px=cal["gap_px"], px_per_mm=pxmm, px_per_mm_file=cal["px_per_mm"], opening_deg=cal["full_opening_angle_deg"],
@@ -40,6 +48,9 @@ def file_row(d: Path):
                                                         "arc_length_px", "arc_width_px", "arc_tip_row"])
     assert len(df) == m["n_frames"], (d, len(df))
     comp = (df["arc_complete"] == 1) & (df["is_flash"] == 0)    # arc_filter.valid_frames criterion
+    # direct test of the root-spot defect the separation gate guards against (review 2, item 3): complete arcs
+    # whose skeleton is shorter than a gap-spanning arch can be (ARCH_MIN_FOOT_SEP_PX = 10)
+    r["short_complete_frac"] = float((df.loc[comp, "arc_length_px"] < 10).mean()) if comp.any() else np.nan
     r.update(frac_complete=float(comp.mean()), n_flash_complete=int(((df["arc_complete"] == 1) & (df["is_flash"] == 1)).sum()))
     c = df[comp]
     # arc_tip_row ('up') = H-1-row, i.e. distance from the BOTTOM EDGE; the gap sits at the mean
@@ -62,8 +73,8 @@ def file_row(d: Path):
         dur_s = ev["duration_frames"] / fps
         r.update(n_events=int(len(ev)), event_rate_hz=len(ev) / (m["n_frames"] / fps),
                  event_dur_ms_med=float(np.median(dur_s) * 1e3) if len(ev) else np.nan,
-                 event_vel_ms_med=float(np.nanmedian(ev["vel_ms"])) if len(ev) else np.nan,
-                 local_vel_ms_med=float(np.nanmedian(ev["local_vel_median"])) if "local_vel_median" in ev else np.nan,
+                 event_vel_ms_med=float(np.nanmedian(ev["vel_ms"]) * vscale) if len(ev) else np.nan,
+                 local_vel_ms_med=float(np.nanmedian(ev["local_vel_median"]) * vscale) if "local_vel_median" in ev else np.nan,
                  extension_mm_med=float(np.nanmedian(ev["extension_px"]) / pxmm) if len(ev) else np.nan)
     rs_p = d / "re_strikes_qa.csv"
     if rs_p.exists():
@@ -94,14 +105,16 @@ print(R.round(4).to_string())
 print(f"recordings found: {len(F)}; DONE: {(F['status'] == 'DONE').sum()}")
 D = F[(F["status"] == "DONE") & (F["tag"] == "")].copy()
 print(f"after status==DONE and nominal-tag filter: {len(D)}")
-np_ = int((D["post_status"] != "DONE").sum())
-print(f"  of which WITHOUT post-stage (flash cut + physical gap row): {np_}")
-D = D[D["post_status"] == "DONE"]
-print(f"after post-stage filter: {len(D)}")
+pg = D["physical_gap_anchor"].fillna(False).astype(bool)
+print("  re-strike apex NOT on the physical gap row:", D.loc[~pg, "stem"].tolist())
+D = D[pg]
+print(f"after physical-gap-anchor filter: {len(D)}")
 sg = D["sep_gate_pass"].fillna(False).astype(bool)
-print("  failing the separation gate (sep - 8 < 10 px):", D.loc[~sg, "stem"].tolist())
-D = D[sg]
-print(f"after separation-gate filter: {len(D)}")
+print("  failing the GEOMETRIC separation bound (sep - 8 < 10 px) [kept for the record]:", D.loc[~sg, "stem"].tolist())
+dg = D["short_complete_frac"].fillna(1.0) < 0.001
+print("  failing the DIRECT test (>= 0.1 % of complete arcs shorter than 10 px):", D.loc[~dg, "stem"].tolist())
+D = D[dg]
+print(f"after direct short-arc filter: {len(D)}")
 
 metrics = ["frac_complete", "arc_len_mm_med", "tip_height_above_gap_mm_med", "tip_height_above_gap_mm_p90", "event_rate_hz", "event_dur_ms_med",
            "event_vel_ms_med", "local_vel_ms_med", "n_restrikes", "frac_modeB", "frac_B_thr005", "frac_B_thr020", "frac_modeB_excl_peak", "cycle_ms_mean",

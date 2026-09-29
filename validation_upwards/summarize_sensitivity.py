@@ -17,9 +17,11 @@ def metrics(d: Path):
     a = json.loads((d / "ARM_DONE.json").read_text())
     df = pd.read_csv(d / "measurements.csv", usecols=["arc_complete", "arc_length_px", "arc_tip_row"])
     c = df[df["arc_complete"] == 1]
+    nm = json.loads((Path(a["nominal"]) / "run_metadata.json").read_text())
+    gap_from_bottom = (nm["H"] - 1) - nm["calibration"]["gap_row"]   # arc_tip_row ('up') is from the bottom edge
     r = dict(frac_complete=float((df["arc_complete"] == 1).mean()),
              arc_len_px_med=float(np.median(c["arc_length_px"])) if len(c) else np.nan,
-             tip_row_med=float(np.median(c["arc_tip_row"])) if len(c) else np.nan)
+             tip_height_px_med=float(np.median(c["arc_tip_row"] - gap_from_bottom)) if len(c) else np.nan)
     ev = pd.read_csv(d / "event_summary.csv") if (d / "event_summary.csv").exists() else pd.DataFrame()
     r.update(n_events=len(ev), event_vel_med=float(np.nanmedian(ev["vel_ms"])) if len(ev) else np.nan,
              local_vel_med=float(np.nanmedian(ev["local_vel_median"])) if len(ev) and "local_vel_median" in ev else np.nan)
@@ -39,7 +41,7 @@ for done in ROOT.rglob("ARM_DONE.json"):
 A = pd.DataFrame(rows)
 if A.empty:
     sys.exit("no finished arms")
-keys = ["frac_complete", "arc_len_px_med", "tip_row_med", "n_events", "event_vel_med", "local_vel_med",
+keys = ["frac_complete", "arc_len_px_med", "tip_height_px_med", "n_events", "event_vel_med", "local_vel_med",
         "n_restrikes", "frac_modeB", "cycle_frames_mean"]
 nom = A[A["arm"] == "nominal"].set_index("stem")
 out = []

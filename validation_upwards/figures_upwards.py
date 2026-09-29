@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 AGG = Path(sys.argv[1])
 F = pd.read_csv(AGG / "per_recording.csv")
-D = F[(F["status"] == "DONE") & (F["tag"].fillna("") == "") & (F["post_status"] == "DONE") & F["sep_gate_pass"].fillna(False)]
+D = F[(F["status"] == "DONE") & (F["tag"].fillna("") == "") & (F["short_complete_frac"].fillna(1.0) < 0.001) & F["physical_gap_anchor"].fillna(False)]
 GASES = sorted(F["gas"].unique())
 COL = dict(zip(GASES, plt.get_cmap("tab10").colors))
 
