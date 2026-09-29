@@ -34,6 +34,9 @@ RANSAC_RESID_PX = 2.0
 TIP_QUANTILE = 0.01
 SEED = 20260928
 EDGE_MIN_HITS_FRAC = 0.002   # edge-cloud pixel kept if hit by >= 0.2 % of clean arches (and >= 3)
+EDGE_LINE_TOL_PX = 6.0       # ... and within this of its own blade line (skeleton ends sit a few px off the edge)
+EDGE_SIDE_MARGIN_PX = 5.0    # ... and at least this much closer to its own line than to the other blade's
+EDGE_SEP_MIN_FRAC = 0.8      # the two clouds must stay >= 0.8 x gap apart, else the calibration FAILS
 
 
 def outward_dir(sk, e, n_back=5):
@@ -115,15 +118,35 @@ def main(cine, out, T, T_low=None, background=None, low_frac=None):
                status="OK")
     # electrode-edge clouds for analyze_blade --electrode-edges: skeleton endpoints (the quantity
     # analyze_blade tests), pixels hit often enough to be an attachment site, not a stray foot
+    # A cloud point must ALSO lie on its own blade: within EDGE_LINE_TOL_PX of that blade's RANSAC line
+    # and >= EDGE_SIDE_MARGIN_PX closer to it than to the other blade's line.  Without this, short arcs
+    # with BOTH feet on one blade put their right-hand foot into cloud B (found 01:00 on Air Re3156 t1:
+    # B held (220, 92) on the LEFT blade, so root spots there passed the attachment test).
     thr = max(3, int(np.ceil(EDGE_MIN_HITS_FRAC * n_arch)))
-    clouds = {}
-    for nm, E in (("A", np.array(epL)), ("B", np.array(epR))):
+
+    def line_dist(P, nm):
+        o, d = np.array(fits[nm]["origin"]), np.array(fits[nm]["dir"])
+        rel = P - o
+        return np.abs(rel[:, 0] * d[1] - rel[:, 1] * d[0])
+
+    clouds, dropped = {}, {}
+    for nm, E, own, other in (("A", np.array(epL), "L", "R"), ("B", np.array(epR), "R", "L")):
         u, c = np.unique(E.astype(int), axis=0, return_counts=True)
-        clouds[nm] = u[c >= thr]
+        u = u[c >= thr].astype(float)
+        dn, do = line_dist(u, own), line_dist(u, other)
+        keep = (dn <= EDGE_LINE_TOL_PX) & (dn + EDGE_SIDE_MARGIN_PX <= do)
+        clouds[nm], dropped[nm] = u[keep], u[~keep].tolist()
+    if len(clouds["A"]) and len(clouds["B"]):
+        dAB = np.hypot(*(clouds["A"][:, None, :] - clouds["B"][None, :, :]).transpose(2, 0, 1))
+        sep = float(dAB.min())
+    else:
+        sep = float("nan")
+    res.update(edge_min_hits=thr, edge_A_px=int(len(clouds["A"])), edge_B_px=int(len(clouds["B"])),
+               edge_dropped=dropped, cloud_sep_min_px=sep)
+    if not (sep >= EDGE_SEP_MIN_FRAC * gap_px):
+        res["status"] = f"FAIL: edge clouds only {sep:.1f} px apart (< {EDGE_SEP_MIN_FRAC} x gap {gap_px:.1f})"
     Path(out).mkdir(parents=True, exist_ok=True)
-    np.savez(Path(out, Path(cine).stem + "_edges.npz"), A=clouds["A"].astype(float), B=clouds["B"].astype(float),
-             A_tip=tipL, B_tip=tipR)
-    res.update(edge_min_hits=thr, edge_A_px=int(len(clouds["A"])), edge_B_px=int(len(clouds["B"])))
+    np.savez(Path(out, Path(cine).stem + "_edges.npz"), A=clouds["A"], B=clouds["B"], A_tip=tipL, B_tip=tipR)
     Path(out, Path(cine).stem + "_gap.json").write_text(json.dumps(res, indent=1))
 
     import matplotlib
