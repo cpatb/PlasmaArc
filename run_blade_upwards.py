@@ -150,6 +150,19 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
     gap_calibration.main(str(p), str(cal_dir), T_high, T_low, str(bgp), low_frac)
     cal = json.loads((cal_dir / (p.stem + "_gap.json")).read_text())
     meta["calibration"] = cal
+    meta["regime"] = dict(frames_scanned=cal.get("frames_scanned"), detected=cal.get("detected"),
+                          clean_arches=cal.get("clean_arches"),
+                          arch_frac_of_frames=(cal.get("clean_arches") or 0) / max(cal.get("frames_scanned") or 1, 1))
+    if str(cal.get("status", "")).startswith("FAIL: fewer than 50 clean arches"):
+        # a REGIME result, not an error: the discharge sits as spots and hardly ever forms an arch across
+        # the gap, so there is nothing to calibrate from and gliding-arc observables are undefined
+        meta["status"] = "NO_GLIDING"
+        meta["elapsed_s"] = time.time() - t0
+        save()
+        done.write_text(json.dumps(meta, indent=1, default=float))
+        print(f"[done] {p.name}  NO_GLIDING  detected {cal.get('detected')}  clean arches {cal.get('clean_arches')}"
+              f" / {cal.get('frames_scanned')} frames", flush=True)
+        return meta
     if cal.get("status") != "OK" or not (GAP_PX_PLAUSIBLE[0] <= cal["gap_px"] <= GAP_PX_PLAUSIBLE[1]):
         meta["status"] = f"STOPPED: calibration {cal.get('status')} gap_px {cal.get('gap_px')}"
         save()

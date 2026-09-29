@@ -35,6 +35,8 @@ TIP_QUANTILE = 0.01
 SEED = 20260928
 EDGE_MIN_HITS_FRAC = 0.002   # edge-cloud pixel kept if hit by >= 0.2 % of clean arches (and >= 3)
 EDGE_LINE_TOL_PX = 12.0      # a dense foot pixel farther than this from BOTH blade lines is a stray
+EDGE_SIDE_MARGIN_PX = 5.0    # a point is assigned to a blade only if >= 5 px nearer its line than the other
+ARCH_MIN_FOOT_SEP_PX = 10.0  # a clean arch spans the gap (~21-25 px): feet closer than this are a root spot
 EDGE_SEP_MIN_FRAC = 0.5      # skeleton-endpoint clouds must stay >= 0.5 x gap apart (ends sit inside the arc)
 
 
@@ -83,6 +85,8 @@ def main(cine, out, T, T_low=None, background=None, low_frac=None):
             if min(e[:, 0]) < top + ARCH_MIN_RISE_PX:
                 continue
             e = e[np.argsort(e[:, 1])]
+            if np.hypot(*(e[0] - e[1])) < ARCH_MIN_FOOT_SEP_PX:
+                continue            # feet 1-2 px apart: a root spot, not an arch across the gap
             n_arch += 1
             feetL.append(foot_point(b, sk, e[0]))
             feetR.append(foot_point(b, sk, e[1]))
@@ -91,6 +95,7 @@ def main(cine, out, T, T_low=None, background=None, low_frac=None):
     res = dict(cine=cine, T=T, T_low=T_low, low_frac=low_frac, background=background, frames_scanned=int(WINDOWS * WIN), detected=n_det, clean_arches=n_arch)
     if n_arch < 50:
         res["status"] = "FAIL: fewer than 50 clean arches"
+        Path(out).mkdir(parents=True, exist_ok=True)
         Path(out, Path(cine).stem + "_gap.json").write_text(json.dumps(res, indent=1))
         return
     rng = np.random.default_rng(SEED)
@@ -128,13 +133,16 @@ def main(cine, out, T, T_low=None, background=None, low_frac=None):
         u = u[c >= thr].astype(float)
         dLd, dRd = line_dist(u, "L"), line_dist(u, "R")
         near = np.minimum(dLd, dRd) <= EDGE_LINE_TOL_PX            # drop stray feet far from both blades
-        return u[near & (dLd < dRd)], u[near & (dRd < dLd)], u[~near].tolist()
+        sided = np.abs(dLd - dRd) >= EDGE_SIDE_MARGIN_PX           # drop mid-gap points no line owns
+        ok = near & sided
+        return u[ok & (dLd < dRd)], u[ok & (dRd < dLd)], u[~ok].tolist()
 
     # gap = closest approach of the dense FOOT-EXTREMITY clouds (arc feet sit on the metal; their
     # minimum separation across the gap is the measurable minimum gap in projection)
     fA, fB, f_stray = dense_sided(np.vstack([L, R]))
     if not (len(fA) and len(fB)):
         res["status"] = "FAIL: empty foot cloud on one blade"
+        Path(out).mkdir(parents=True, exist_ok=True)
         Path(out, Path(cine).stem + "_gap.json").write_text(json.dumps(res, indent=1))
         return
     dAB = np.hypot(*(fA[:, None, :] - fB[None, :, :]).transpose(2, 0, 1))

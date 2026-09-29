@@ -20,6 +20,9 @@ def file_row(d: Path):
     post = json.loads((d / "POST.json").read_text()) if (d / "POST.json").exists() else {}
     r = dict(stem=d.name, gas=m["gas"], Re=m["Re"], trial=m["trial"], status=m.get("status"), tag=m.get("tag", ""),
              post_status=post.get("status"), n_frames=m.get("n_frames"), fps=m.get("fps"))
+    reg = m.get("regime") or {}
+    r.update(detected_frames_cal=reg.get("detected"), clean_arches_cal=reg.get("clean_arches"),
+             arch_frac_of_frames=reg.get("arch_frac_of_frames"))
     if m.get("status") != "DONE":
         return r
     det, cal = m["detector"], m["calibration"]
@@ -75,6 +78,12 @@ dirs = sorted({p.parent for p in ROOT.rglob("run_metadata.json")})
 rows = [file_row(d) for d in dirs]
 F = pd.DataFrame(rows).sort_values(["gas", "Re", "trial"])
 F.to_csv(OUT / "per_recording.csv", index=False)
+R = F[F["tag"] == ""].groupby(["gas", "Re"]).agg(n=("stem", "size"),
+                                                n_no_gliding=("status", lambda x: int((x == "NO_GLIDING").sum())),
+                                                arch_frac_mean=("arch_frac_of_frames", "mean"))
+R.to_csv(OUT / "regime_by_condition.csv")
+print("regime (clean arches per scanned frame; NO_GLIDING = < 50 in 10 000 frames):")
+print(R.round(4).to_string())
 print(f"recordings found: {len(F)}; DONE: {(F['status'] == 'DONE').sum()}")
 D = F[(F["status"] == "DONE") & (F["tag"] == "")].copy()
 print(f"after status==DONE and nominal-tag filter: {len(D)}")
