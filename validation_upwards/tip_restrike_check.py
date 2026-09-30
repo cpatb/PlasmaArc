@@ -38,7 +38,8 @@ EXT_PROM_FRAC, MIN_CYCLE, SMOOTH = 0.10, 5, 3
 SUDDEN_MM = 1.5   # the centroid detector's threshold (smallest with false-detection <= 5 %); used here for comparability
 
 
-def one_run(rd: Path):
+def load_tip(rd: Path):
+    """The tip series exactly as qa_restrike.py sees it: (meta, px/mm, frames, tip rows, apex row)."""
     meta = json.loads((rd / "run_metadata.json").read_text(encoding="utf-8"))
     pxmm, H = float(meta["calibration"]["px_per_mm"]), int(meta["H"])
     gap_row = int(round(meta["calibration"]["gap_row"]))
@@ -53,7 +54,12 @@ def one_run(rd: Path):
         raise RuntimeError(f"{rd.name}: {d['file'].nunique()} files in one run")
     fr = d["frame"].to_numpy(int)
     tip = d["arc_tip_row"].to_numpy(float)
-    erow, l_eff, src = apex_and_range(tip, None, apex_override=float(H - 1 - gap_row))
+    erow, l_eff, _ = apex_and_range(tip, None, apex_override=float(H - 1 - gap_row))
+    return meta, pxmm, fr, tip, erow, l_eff
+
+
+def one_run(rd: Path):
+    meta, pxmm, fr, tip, erow, l_eff = load_tip(rd)
     rk, peaks, _ = detect_restrikes(tip, erow, l_eff, EXT_PROM_FRAC, MIN_CYCLE, SMOOTH)
     ref = pd.read_csv(rd / "re_strikes_qa.csv")["frame"].to_numpy(int)
     got = np.array([fr[r["idx"]] for r in rk], int)
