@@ -472,7 +472,7 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
     # 4. downstream stages
     fps = f"{src.fps:.0f}"
     run([HERE / "event_velocity.py", mcsv, od, "--px-per-mm", f"{pxmm:.5f}", "--fps", fps,
-         "--local-vel-n", LOCAL_VEL_N], log)
+         "--local-vel-n", LOCAL_VEL_N, "--combined-event-files"], log)
     ev = od / "measurements_all_events.csv"
     if ev.exists():
         run([HERE / "qa_restrike.py", "--csv", ev, "--cine", rp, "--background", bgp,

@@ -699,7 +699,7 @@ def add_local_velocity_stats(events, df_merged):
     return events
 
 
-def save_per_event_data(df_merged, events, dyn, out_dir):
+def save_per_event_data(df_merged, events, dyn, out_dir, combined=False):
     """
     Write per-event CSVs to out_dir/events/.
 
@@ -715,6 +715,14 @@ def save_per_event_data(df_merged, events, dyn, out_dir):
     print(f"Saved: {ev_dir / 'events_index.csv'}  ({len(events)} events)")
 
     detected = df_merged[df_merged['event_id'] >= 0]
+    if combined:
+        # ONE file per kind (rows keep their event_id column) instead of one per event: identical content,
+        # but ~1 KB per-event files each take a whole cluster on a large exFAT drive (512 KB on E:, 2026-09-29)
+        detected.to_csv(ev_dir / 'events_frames.csv', index=False)
+        if dyn is not None and len(dyn) > 0:
+            dyn.to_csv(ev_dir / 'events_dynamics.csv', index=False)
+        print(f"Saved combined per-event frames/dynamics ({detected['event_id'].nunique()} events) → {ev_dir}/")
+        return
     n_frames = 0
     for eid, grp in detected.groupby('event_id'):
         grp.to_csv(ev_dir / f'event_{int(eid):04d}_frames.csv', index=False)
@@ -1170,6 +1178,9 @@ def main():
                          'Phantom HS crystal stability is ~50-100 ppm but trig-mode '
                          'rounding can be larger; conservative default 1e-3.'
                          % SIGMA_FPS_REL)
+    ap.add_argument('--combined-event-files', action='store_true',
+                    help='write events/events_frames.csv + events_dynamics.csv (one file each, rows keep '
+                         'event_id) instead of one CSV per event')
     args = ap.parse_args()
     if args.pxmm_rel_err is not None:
         SIGMA_PXMM_REL = float(args.pxmm_rel_err)
@@ -1235,7 +1246,7 @@ def main():
     df_merged.to_csv(out_dir / 'measurements_all_events.csv', index=False)
     print(f"Saved: {out_dir / 'measurements_all_events.csv'}")
 
-    save_per_event_data(df_merged, events, dyn, out_dir)
+    save_per_event_data(df_merged, events, dyn, out_dir, combined=args.combined_event_files)
     print_summary(events)
 
     if events is not None and len(events) and 'vel_ms' in events.columns:
