@@ -155,8 +155,9 @@ print()
 
 # ---------------------------------------------------------------- not quotable
 print("### NOT QUOTABLE — tip-detector re-strike outputs (`re_strikes_qa.csv`), kept for comparison\n")
-print("Across these detections the centroid moves a median 0.1-0.2 px: most are apex jitter, not breakdowns. Mode A/B "
-      "fractions are shown at three thresholds because the split is set by the threshold.\n")
+print("Counts include small falls (< 1.5 mm, mostly classed Mode B) until a minimum-fall rule is chosen; see "
+      "`tip_restrike_check\\` and 'Not established'. Mode A/B fractions are shown at three thresholds because the "
+      "split is set by the threshold.\n")
 T2 = G[[k for k, _ in TIPDET]].mean().reset_index().rename(columns=dict(TIPDET))
 print(md(T2.round(3)), "\n")
 
