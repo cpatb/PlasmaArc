@@ -170,11 +170,28 @@ def binarize(raw_uint8, close_r,
         return np.zeros(raw_uint8.shape, bool)
     return mask
 
-def skeleton_endpoints(skel):
+def _bbox_crop(img, margin):
+    """(img[r0:r1, c0:c1], r0, c0): the bounding box of img's nonzero pixels plus `margin` px (clipped to the
+    frame). SPEED ONLY: every caller does a local (3x3) operation with zero outside the image, which is
+    identical on this crop because everything outside the box is zero."""
+    rr, cc = np.nonzero(img)
+    if rr.size == 0:
+        return img, 0, 0
+    r0, c0 = max(int(rr.min()) - margin, 0), max(int(cc.min()) - margin, 0)
+    return img[r0:int(rr.max()) + margin + 1, c0:int(cc.max()) + margin + 1], r0, c0
+
+
+def _skel_neighbours(skel):
+    """3x3 neighbour count of every skeleton pixel (zero padding), on the skeleton's bounding box."""
+    sub, r0, c0 = _bbox_crop(skel, 1)
     kern = np.ones((3,3), np.uint8); kern[1,1] = 0
-    nb = convolve(skel.astype(np.uint8), kern, mode='constant')
-    r, c = np.where(skel & (nb == 1))
-    return np.column_stack([r, c]) if r.size else np.empty((0,2), int)
+    return sub, convolve(sub.astype(np.uint8), kern, mode='constant'), r0, c0
+
+
+def skeleton_endpoints(skel):
+    sub, nb, r0, c0 = _skel_neighbours(skel)
+    r, c = np.where(sub & (nb == 1))
+    return np.column_stack([r + r0, c + c0]) if r.size else np.empty((0,2), int)
 
 def find_electrode_tips(eps, H, top_fraction):
     """Widest-separated endpoint pair in the top fraction of the frame."""
@@ -366,9 +383,9 @@ def fwhm_perpendicular(gray_n, coords, sample_step=10, half_width=20):
 def ordered_skeleton_coords(skel):
     pts = set(map(tuple, np.column_stack(np.where(skel))))
     if not pts: return np.empty((0,2))
-    kern = np.ones((3,3), np.uint8); kern[1,1] = 0
-    nb = convolve(skel.astype(np.uint8), kern, mode='constant')
-    eps = list(zip(*np.where(skel & (nb==1))))
+    sub, nb, r0, c0 = _skel_neighbours(skel)
+    er, ec = np.where(sub & (nb==1))
+    eps = list(zip(er + r0, ec + c0))
     start = eps[0] if eps else next(iter(pts))
     order, visited = [start], {start}
     while True:
@@ -706,7 +723,10 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
         _tip_r = float(H - 1 - _tip_r)
     m['arc_tip_row'], m['arc_tip_col'] = _tip_r, _tip_c
 
-    skel = skeletonize(binary)
+    # skeletonize on the mask's bounding box (+2 px of zeros), pasted back: speed only, byte-identical skeleton
+    _sub, _r0, _c0 = _bbox_crop(binary, 2)
+    skel = np.zeros_like(binary, dtype=bool)
+    skel[_r0:_r0 + _sub.shape[0], _c0:_c0 + _sub.shape[1]] = skeletonize(_sub)
     if not skel.any(): return m
     coords = ordered_skeleton_coords(skel)
     if keep_overlays: m['_skel_coords'] = coords
