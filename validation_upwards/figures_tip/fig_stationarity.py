@@ -1,10 +1,12 @@
 """Within-recording stationarity: does a recording drift over its 325 ms more than repeat recordings differ?
 
 Per recording: median of a quantity over the last third of the record divided by its median over the first third
-(frames_cache.parquet). NULL, matched in sample size: the same-third medians of two different trials of the same
-condition (every trial pair, first and last third). Both are summarised as |ln ratio|; a Mann-Whitney U test
-compares them. (A first version compared thirds against the WHOLE-record trial scatter, which has 3x the data and
-so is not a like-for-like null; it made every recording look non-stationary. Replaced 2026-09-30.)
+(frames_cache.parquet). PRIMARY statistic (referee 2026-09-30): the SIGNED mean of ln(last/first) over recordings,
+with its standard error -- a systematic drift shows as a mean away from 0. REFERENCE band, for scale only: the
+same-third medians of two different trials of the same condition. It is NOT a matched null: it also carries the
+level difference between trials, which cancels inside a within-recording ratio, so it leans towards "no
+difference"; the Mann-Whitney comparison with it is printed but not used as a verdict. (A first version compared
+thirds against the WHOLE-record trial scatter, which has 3x the data; it made every recording look non-stationary.)
 
 Panels (a, b): last/first ratio per recording (open) and mean +/- sd over trials (filled) against Re, with the band
 exp(+/- median |ln ratio| of the null). A recording is used only if both thirds hold >= MIN_FRAMES frames.
@@ -37,19 +39,23 @@ def main():
         M.loc[M["n"] < MIN_FRAMES, "med"] = np.nan
         P = M.pivot_table(index=["run", "gas", "Re", "trial"], columns="third", values="med").reset_index()
         P["ratio"] = P[2] / P[0]
-        P.loc[~(P[0] > 0), "ratio"] = np.nan
+        P.loc[~((P[0].abs() > C.ZERO_EPS) & (P[2].abs() > C.ZERO_EPS)), "ratio"] = np.nan   # float-noise medians (review)
         within = np.abs(np.log(P["ratio"].dropna().to_numpy()))
         across = []
         for _, d in P.groupby(["gas", "Re"]):
             for (_, r1), (_, r2) in itertools.combinations(d.iterrows(), 2):
                 for th in (0, 2):
-                    if r1[th] > 0 and r2[th] > 0:
+                    if r1[th] > C.ZERO_EPS and r2[th] > C.ZERO_EPS:
                         across.append(abs(np.log(r1[th] / r2[th])))
         across = np.array(across)
         p = mannwhitneyu(within, across).pvalue
         m = float(np.median(across))
-        lines.append(f"{col}: within-recording median |ln(last/first)| {np.median(within):.3f} (n {len(within)}); "
-                     f"between trials, same third {m:.3f} (n {len(across)}); Mann-Whitney p {p:.3g}")
+        sl = np.log(P["ratio"].dropna().to_numpy())                     # signed: the primary statistic
+        se = sl.std(ddof=1) / np.sqrt(len(sl))
+        lines.append(f"{col}: signed mean ln(last/first) {sl.mean():+.3f} ± {se:.3f} (s.e., n {len(sl)}), so a "
+                     f"systematic drift is below {100 * (np.exp(abs(sl.mean()) + 2 * se) - 1):.1f} % (2 s.e.); "
+                     f"median |ln| {np.median(within):.3f} within recordings vs {m:.3f} between repeats "
+                     f"(reference only; Mann-Whitney p {p:.3g})")
         ax.axhspan(np.exp(-m), np.exp(m), color="0.9", lw=0)
         ax.axhline(1, color="0.5", lw=0.8)
         out.append(C.vs_re_panel(ax, P.rename(columns={"run": "stem"}), "ratio", lab)
@@ -62,14 +68,15 @@ def main():
     fig.tight_layout()
     C.save(fig, "fig_stationarity", pd.concat(out, ignore_index=True),
            f"validation_upwards/figures_tip/fig_stationarity.py; thirds of the record; >= {MIN_FRAMES} frames per "
-           "third; null = same third between trials; input frames_cache.parquet",
+           "third; primary = signed mean ln ratio; band = same third between trials (reference); input frames_cache.parquet",
            f"""# Within-recording stationarity
 
 Median of the last third of each 325 ms recording divided by the median of its first third, for the local tip
-velocity (a) and the arc length (b); per recording (open) and mean ± sd over trials (filled). Grey band: the
-typical difference between two REPEAT recordings of the same condition over the same third (exp(± median |ln ratio|)),
-i.e. a null matched in sample size. {' '.join(lines)}. Drift within a recording is not resolved beyond the
-difference between repeat recordings. A recording is used only if both thirds hold ≥ {MIN_FRAMES} frames.""")
+velocity (a) and the arc length (b); per recording (open) and mean ± sd over trials (filled). {' '.join(lines)}.
+Individual recordings fluctuate between thirds; there is no systematic drift in either direction. Grey band, for
+scale only: the typical difference between two REPEAT recordings over the same third (exp(± median |ln ratio|)); it
+includes between-trial level differences, so it is not a matched null. A recording is used only if both thirds hold
+≥ {MIN_FRAMES} frames.""")
 
 
 if __name__ == "__main__":

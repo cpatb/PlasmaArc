@@ -38,8 +38,8 @@ def main():
         h = (c["arc_tip_row"] - ((H - 1) - gap_row)) / pxmm
         L = c["arc_length_px"] / pxmm
         # anchor: the aggregate table's medians, computed by aggregate_upwards.py from measurements.csv
-        if not (np.isclose(np.median(L), r["arc_len_mm_med"], atol=1e-9)
-                and np.isclose(np.percentile(h, 90), r["tip_height_above_gap_mm_p90"], atol=1e-9)):
+        if not (np.isclose(np.median(L), r["arc_len_mm_med"], rtol=0, atol=1e-9)
+                and np.isclose(np.percentile(h, 90), r["tip_height_above_gap_mm_p90"], rtol=0, atol=1e-9)):
             raise SystemExit(f"{r['stem']}: per-frame medians do not reproduce the aggregate table")
         rows.append(pd.DataFrame({"run": r["stem"], "gas": r["gas"], "Re": int(r["Re"]), "trial": int(r["trial"]),
                                   "frame": c["frame"].to_numpy(), "t_frac": c["frame"].to_numpy() / int(m["n_frames"]),

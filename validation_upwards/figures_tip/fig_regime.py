@@ -25,8 +25,8 @@ def main():
 
 Fraction of all frames holding a complete arc (attached to both blades within 7 px of the hand-drawn edges, not a
 flash), per recording (open) and mean ± sd over trials (filled). Argon glides almost all the time (≈ 0.84) at every
-Re; Air and Ar–Air sit near 0.35–0.42; CO₂ and Ar–CO₂ are spot-dominated at low Re (0.04–0.06) and reach ≈ 0.3 only
-above Re ≈ 5000. Only large contrasts are resolved: neighbouring-Re steps and the Air vs Ar–Air difference are
+Re; Air and Ar–Air sit near 0.33–0.42; CO₂ and Ar–CO₂ are spot-dominated at Re 3156 (0.04–0.06) and rise to ≈ 0.3
+by Re 4969 (Ar–CO₂) and Re 5875 (CO₂); exact values in data/fig_regime.csv. Only large contrasts are resolved: neighbouring-Re steps and the Air vs Ar–Air difference are
 within the detector's sensitivity.""")
 
 

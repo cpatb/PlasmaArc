@@ -1,11 +1,17 @@
-"""Local tip velocity against tip height above the gap: one panel per gas, one line per Re.
+"""Local tip velocity against tip height above the gap: one column per gas, one line per Re.
 
-Per height bin: median over each TRIAL's frames, then the mean of the trial medians (line) and their min-max (band),
-so the band is trial-to-trial scatter, not frame scatter. A bin is drawn only if every trial of the condition has
->= MIN_FRAMES velocity frames in it. Frames from frames_cache.parquet (advancing-front frames only).
+Top row: median over MOVING frames (|v| > C.ZERO_EPS). Bottom row: the share of STALLED frames (v exactly 0: the
+whole-pixel tip did not move over the 5-frame fit). They are separated because the stalled share changes with
+height, and folding it into one median manufactured a trend (code review 2026-09-30: Argon Re2250's apparent
+0.69 -> 1.34 m/s rise came from the zero share falling 0.45 -> 0.08 with height; without zeros it rises at most ~12 %).
 
-Selection caveat, stated in the caption: the local velocity exists only on advancing-front frames, so low heights
-are sampled early in each glide and large heights late; the profile is velocity AT a height, not one arc's history.
+Per height bin: each TRIAL's statistic, then the mean over trials (line) and their min-max (band = trial scatter).
+A bin is drawn only if every trial of the condition has >= MIN_FRAMES velocity frames in it. Frames above
+EDGES[-1] are not drawn and are counted in the printout.
+
+Selection caveat (caption): velocities exist only on advancing-front frames, and none are near the gap (Argon
+Re8594: 1st percentile of velocity-frame heights 3.75 mm), so the lowest drawn bin is the floor of sampling, not the
+gap. The profile is the velocity observed AT a height, pooled over many glides.
 
 usage: python fig_velocity_vs_height.py
 """
@@ -20,51 +26,67 @@ MIN_FRAMES = 100
 RE_SHOW = [2250, 3156, 4969, 6781, 8594]      # every other Re step (lowest available per gas included)
 
 
+def per_bin(d, ntr, stat):
+    t = d.groupby(["hb", "trial"], observed=True)["v_ms"].agg([stat, "size"]).reset_index()
+    ok = t[t["size"] >= MIN_FRAMES].groupby("hb", observed=True).filter(lambda x: len(x) == ntr)
+    return ok.groupby("hb", observed=True)[stat].agg(["mean", "min", "max"])
+
+
 def main():
     C.style()
     D = pd.read_parquet(C.CACHE, columns=["gas", "Re", "trial", "h_mm", "v_ms"])
-    D = D[D["v_ms"].notna()]
+    D = D[D["v_ms"].notna()].copy()
+    print(f"velocity frames {len(D)}; above {EDGES[-1]} mm (not drawn): {int((D['h_mm'] > EDGES[-1]).sum())}")
     D["hb"] = pd.cut(D["h_mm"], EDGES)
-    fig, axs = plt.subplots(1, len(C.GASES), figsize=(13, 3.0), sharey=True)
+    D["stall"] = (D["v_ms"].abs() <= C.ZERO_EPS).astype(float)
+    fig, axs = plt.subplots(2, len(C.GASES), figsize=(13, 5.4), sharex=True, sharey="row",
+                            gridspec_kw={"height_ratios": [2, 1]})
     cmap = plt.get_cmap("viridis")
     rows, ymax = [], 0.0
-    for ax, gas in zip(axs, C.GASES):
+    for j, gas in enumerate(C.GASES):
         for Re in RE_SHOW:
             d = D[(D["gas"] == gas) & (D["Re"] == Re)]
             if d.empty:
                 continue
             ntr = d["trial"].nunique()
-            t = d.groupby(["hb", "trial"], observed=True)["v_ms"].agg(["median", "size"]).reset_index()
-            ok = t[t["size"] >= MIN_FRAMES].groupby("hb", observed=True).filter(lambda x: len(x) == ntr)
-            s = ok.groupby("hb", observed=True)["median"].agg(["mean", "min", "max"])
-            if s.empty:
-                continue
-            x = np.array([b.mid for b in s.index])
             col = cmap((Re - 2250) / (8594 - 2250))
-            ax.fill_between(x, s["min"], s["max"], color=col, alpha=0.25, lw=0)
-            ax.plot(x, s["mean"], "o-", color=col, ms=3, lw=1.2, label=f"{Re}")
-            ymax = max(ymax, s["max"].max())
-            rows.append(pd.DataFrame({"gas": gas, "Re": Re, "h_mid_mm": x, "v_mean_of_trials": s["mean"].values,
-                                      "v_min_trial": s["min"].values, "v_max_trial": s["max"].values, "n_trials": ntr}))
-        ax.set_title(C.LABEL[gas], fontsize=10)
-        ax.set_xlabel("tip height above gap (mm)")
-        ax.set_xlim(0, EDGES[-1])
-    for ax in axs:
-        ax.set_ylim(0, 1.05 * ymax)
-    axs[0].set_ylabel("local tip velocity (m/s)")
-    axs[0].legend(title="Re", fontsize=7, title_fontsize=8, frameon=False, loc="upper left", ncol=2)
+            # stalled share uses every velocity frame; the median uses moving frames only
+            dz = d.assign(v_ms=d["stall"])
+            sz = per_bin(dz, ntr, "mean")
+            mv = d[d["stall"] == 0]
+            sv = per_bin(mv, mv["trial"].nunique(), "median") if mv["trial"].nunique() == ntr else pd.DataFrame()
+            for ax, s, name in ((axs[0, j], sv, "v_moving_median"), (axs[1, j], sz, "stalled_share")):
+                if s.empty:
+                    continue
+                x = np.array([b.mid for b in s.index])
+                ax.fill_between(x, s["min"], s["max"], color=col, alpha=0.25, lw=0)
+                ax.plot(x, s["mean"], "o-", color=col, ms=3, lw=1.2, label=f"{Re}" if name != "stalled_share" else None)
+                rows.append(pd.DataFrame({"gas": gas, "Re": Re, "quantity": name, "h_mid_mm": x,
+                                          "mean_of_trials": s["mean"].values, "min_trial": s["min"].values,
+                                          "max_trial": s["max"].values, "n_trials": ntr}))
+                if name == "v_moving_median":
+                    ymax = max(ymax, s["max"].max())
+        axs[0, j].set_title(C.LABEL[gas], fontsize=10)
+        axs[1, j].set_xlabel("tip height above gap (mm)")
+        axs[1, j].set_xlim(0, EDGES[-1])
+    axs[0, 0].set_ylim(0, 1.05 * ymax)
+    axs[1, 0].set_ylim(0, 1)
+    axs[0, 0].set_ylabel("tip velocity, moving frames (m/s)")
+    axs[1, 0].set_ylabel("stalled share")
+    axs[0, 0].legend(title="Re", fontsize=7, title_fontsize=8, frameon=False, loc="upper left", ncol=2)
     fig.tight_layout()
     C.save(fig, "fig_velocity_vs_height", pd.concat(rows, ignore_index=True),
            f"validation_upwards/figures_tip/fig_velocity_vs_height.py; 1 mm bins; >= {MIN_FRAMES} frames per trial "
-           "per bin, all trials required; input frames_cache.parquet",
+           "per bin, all trials required; moving = |v| > 1e-9; input frames_cache.parquet",
            f"""# Tip velocity against height
 
-Local tip velocity against the leading tip's height above the minimum gap, one panel per gas, one line per Re (every
-other Re step). Line: mean over trials of each trial's median in 1 mm height bins; band: min–max of the trial
-medians (trial-to-trial scatter). A bin is drawn only where every trial has ≥ {MIN_FRAMES} velocity frames.
-The velocity exists only on advancing-front frames, so this is the velocity observed AT a height, pooled over many
-glides, not the history of one arc. The lowest bin of each line also holds the arc's first growth after a re-strike
-at the gap, so read the trend from the bins above it.""")
+Top: median local tip velocity over moving frames against the leading tip's height above the minimum gap, one column
+per gas, one line per Re (every other Re step). Bottom: the share of stalled frames (the whole-pixel tip did not move
+over the 5-frame fit), which is shown separately because it changes with height and would otherwise create a trend
+in a median. Lines: mean over trials of each trial's statistic in 1 mm bins; bands: min–max over trials. A bin is
+drawn only where every trial has ≥ {MIN_FRAMES} velocity frames. Velocities exist only on advancing-front frames and
+none are near the gap, so the lowest drawn bin is where sampling starts, not the gap; this is the velocity observed
+AT a height, pooled over many glides, not the history of one arc.""")
 
 
 if __name__ == "__main__":

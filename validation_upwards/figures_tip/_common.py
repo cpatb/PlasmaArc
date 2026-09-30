@@ -8,7 +8,6 @@ Inputs (all printed by scripts; nothing typed):
 """
 import subprocess
 import sys
-from datetime import date
 from pathlib import Path
 
 import matplotlib
@@ -64,6 +63,34 @@ def per_run():
     return D
 
 
+ZERO_EPS = 1e-9     # event_velocity writes a stalled tip's 5-frame OLS slope as +/-1e-13: a zero, not a velocity
+EST_WIDE = 0.20     # display convention only: an estimator range wider than this fraction of its mean is drawn hollow
+
+
+def velocity_estimators():
+    """Per (gas, Re): the tip velocity by four estimators, and their range.
+
+    The 5-frame local velocity is quantised by the integer tip row (~0.106 mm): a slow tip reads exactly 0 on most
+    frames and one-pixel values on the rest (code review 2026-09-30). Its median is then a biased estimator, and which
+    estimator is used matters. Reported side by side, no selection:
+      med     median over all velocity frames (zeros included)
+      med_nz  median over frames with |v| > ZERO_EPS
+      mean    mean over all velocity frames (least affected by quantisation for a steady tip)
+      agg     the headline number: per recording, median over events of each event's median (aggregate_upwards.py)
+    lo / hi = min / max of the four; spread = (hi - lo) / mean of the four; zero = share of exactly-zero frames."""
+    D = pd.read_parquet(CACHE, columns=["gas", "Re", "v_ms"])
+    D = D[D["v_ms"].notna()]
+    nz = D["v_ms"].abs() > ZERO_EPS
+    g = D.groupby(["gas", "Re"])["v_ms"]
+    T = pd.DataFrame({"med": g.median(), "med_nz": D[nz].groupby(["gas", "Re"])["v_ms"].median(), "mean": g.mean(),
+                      "zero": (~nz).groupby([D["gas"], D["Re"]]).mean()})
+    T["agg"] = per_run().groupby(["gas", "Re"])["local_vel_ms_med"].mean()
+    E = T[["med", "med_nz", "mean", "agg"]]
+    T["lo"], T["hi"] = E.min(axis=1), E.max(axis=1)
+    T["spread"] = (T["hi"] - T["lo"]) / E.mean(axis=1)
+    return T.reset_index()
+
+
 def by_condition(D, col):
     g = D.groupby(["gas", "Re"])[col]
     return pd.DataFrame({"mean": g.mean(), "sd": g.std(), "n": g.count()}).reset_index()
@@ -90,7 +117,7 @@ def save(fig, slug, data: pd.DataFrame, provenance: str, caption_md: str):
     """PDF (vector, fixed metadata so it regenerates identically) + PNG 300 dpi + plotted-data CSV + caption .md."""
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "data").mkdir(exist_ok=True)
-    prov = f"{provenance}; git {git_hash()}; {date.today().isoformat()}"
+    prov = f"{provenance}; git {git_hash()}"      # no date: the outputs must regenerate identically on any day
     fig.savefig(OUT / f"{slug}.pdf", metadata={"Subject": prov, "CreationDate": None, "ModDate": None})
     fig.savefig(OUT / f"{slug}.png", dpi=300, metadata={"Software": None})
     plt.close(fig)
