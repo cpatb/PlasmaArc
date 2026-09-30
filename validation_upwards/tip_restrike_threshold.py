@@ -34,6 +34,21 @@ GRID_MM = np.round(np.arange(0.1, 5.01, 0.1), 2)
 MODE_THR = (0.05, 0.10, 0.20)
 
 
+def fdr(rises, falls):
+    """rises/falls; 0 when there is nothing at all (no fall and no rise), inf when rises exist but no falls."""
+    r, f = np.asarray(rises, float), np.asarray(falls, float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(f > 0, r / np.where(f > 0, f, 1), np.where(r > 0, np.inf, 0.0))
+
+
+def smallest_T(d, col):
+    """Smallest grid T with d[col] <= FDR_MAX there AND at every larger T; NaN if none."""
+    d = d.sort_values("T_mm")
+    ok = (d[col] <= FDR_MAX).to_numpy()
+    tail_ok = np.flip(np.cumprod(np.flip(ok))).astype(bool)
+    return float(d["T_mm"].to_numpy()[tail_ok][0]) if tail_ok.any() else np.nan
+
+
 def main():
     root, chk, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
     out.mkdir(parents=True, exist_ok=True)
@@ -50,16 +65,12 @@ def main():
                              falls_cons=int((st[cons] <= -T).sum()), rises_cons=int((st[cons] >= T).sum())))
     C = pd.DataFrame(rows)
     G = C.groupby(["gas", "T_mm"])[["falls", "rises", "falls_cons", "rises_cons"]].sum().reset_index()
-    G["fdr"] = G["rises"] / G["falls"].replace(0, np.nan)
-    G["fdr_cons"] = G["rises_cons"] / G["falls_cons"].replace(0, np.nan)
+    G["falls_brk"], G["rises_brk"] = G["falls"] - G["falls_cons"], G["rises"] - G["rises_cons"]
+    for sfx in ("", "_cons", "_brk"):
+        G["fdr" + sfx] = fdr(G["rises" + sfx], G["falls" + sfx])
     G.to_csv(out / "tip_threshold_curve.csv", index=False)
 
-    tg = {}
-    for g, d in G.groupby("gas"):
-        d = d.sort_values("T_mm")
-        ok = (d["fdr"] <= FDR_MAX).to_numpy()
-        tail_ok = np.flip(np.cumprod(np.flip(ok))).astype(bool)   # ok here and at every larger T
-        tg[g] = float(d["T_mm"].to_numpy()[tail_ok][0]) if tail_ok.any() else np.nan
+    tg = {g: smallest_T(d, "fdr") for g, d in G.groupby("gas")}
     passing = {g: t for g, t in tg.items() if np.isfinite(t)}
     if not passing:
         raise SystemExit("no gas meets the false-detection rule at any grid threshold")
@@ -75,8 +86,15 @@ def main():
     print(f"**T_TIP = {T_TIP:.1f} mm** (smallest common threshold over {', '.join(sorted(passing))}); "
           f"failing: {', '.join(failing) if failing else 'none'}")
     at = G[np.isclose(G["T_mm"], T_TIP)].set_index("gas")
-    print("\nAt T_TIP: " + "; ".join(f"{g} {100 * r.fdr:.1f} % (consecutive frames only {100 * r.fdr_cons:.1f} %)"
-                                      for g, r in at.iterrows()) + "\n")
+    print("\nAt T_TIP: " + "; ".join(f"{g} {100 * r.fdr:.1f} % (consecutive frames only {100 * r.fdr_cons:.1f} %, "
+                                      f"{int(r.rises_cons)}/{int(r.falls_cons)}; across a break {100 * r.fdr_brk:.1f} %)"
+                                      for g, r in at.iterrows()))
+    sub = {g: (smallest_T(d, "fdr_cons"), smallest_T(d, "fdr_brk")) for g, d in G.groupby("gas")}
+    bad = [g for g, r in at.iterrows() if not (r.fdr_cons <= FDR_MAX and r.fdr_brk <= FDR_MAX)]
+    print("SUB-CHECK (reported, not applied; the registered rule is the pooled one): the 5 % bar applied to each "
+          f"step type separately {'FAILS for ' + ', '.join(bad) if bad else 'passes for every gas'} at T_TIP. "
+          "Smallest T per type (consecutive / across a break): "
+          + ", ".join(f"{g} {c:.1f} / {b:.1f} mm" for g, (c, b) in sub.items()) + "\n")
 
     # ---- apply to the tip re-strikes
     E = pd.read_csv(chk / "tip_restrike_events.csv")
@@ -85,14 +103,18 @@ def main():
     E = E.merge(Q, on=["run", "frame"], how="left", validate="one_to_one")
     if E["norm_pos"].isna().any():
         raise SystemExit(f"{int(E['norm_pos'].isna().sum())} events without a norm_pos")
-    E["kept"] = E["max_step_mm"] >= T_TIP
+    # kept: a single-step fall >= T_TIP, a net fall from the peak >= T_TIP, and no single-step rise >= T_TIP after
+    # the fall (a one-step rise is what the rule counts as a false detection, so a fall undone by one is a spike)
+    E["kept"] = (E["max_step_mm"] >= T_TIP) & (E["fall_mm"] >= T_TIP) & (E["rise_after_mm"] < T_TIP)
+    print(f"events: {len(E)}; max step >= T_TIP: {int((E['max_step_mm'] >= T_TIP).sum())}; also net fall >= T_TIP: "
+          f"{int(((E['max_step_mm'] >= T_TIP) & (E['fall_mm'] >= T_TIP)).sum())}; also no rebound: {int(E['kept'].sum())}")
     E.to_csv(out / "tip_restrike_events_kept.csv", index=False)
     rises_T = C[np.isclose(C["T_mm"], T_TIP)].set_index("run")["rises"]
     per = []
-    for run, d in E.groupby("run"):
-        m = runs[run]
-        k = d[d["kept"]].sort_values("frame")
-        cyc = np.diff(k["frame"].to_numpy()) / m["fps"] * 1e3
+    for run, m in runs.items():                    # every run, including one with no event (rate 0, not NaN)
+        d = E[E["run"] == run]
+        k = d[d["kept"]].sort_values("frame_min")
+        cyc = np.diff(k["frame_min"].to_numpy()) / m["fps"] * 1e3
         n = len(k) - (int(rises_T[run]) if m["gas"] in failing else 0)
         r = dict(run=run, gas=m["gas"], Re=m["Re"], trial=m["trial"], n_all=len(d), n_kept=len(k), n_count=n,
                  rate_per_s=n / m["duration_s"], cycle_ms_mean=cyc.mean() if len(cyc) else np.nan,

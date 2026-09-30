@@ -44,8 +44,11 @@ def main():
     out.append(f"pooled valley {VAL:.2f} mm (peaks {v['peak1']:.2f} / {v['peak2']:.2f} mm)")
     for g, d in E.groupby("gas"):
         vg = find_valley(d["tip_after_mm"].to_numpy(float))
+        # find_valley returns peak2 == valley when the only "second peak" is the first bin past peak1 + sep_mm, i.e.
+        # the tail of the first peak: that is a unimodal distribution, not a valley (review 2026-09-30)
+        real = vg is not None and vg["peak2"] > vg["valley"]
         out.append(f"  {g}: " + (f"valley {vg['valley']:.2f} mm (peaks {vg['peak1']:.2f} / {vg['peak2']:.2f})"
-                                  if vg else "no second peak (unimodal)")
+                                  if real else "no second peak found by find_valley on this gas alone")
                    + f"; events above {VAL:.2f} mm: {int((d['tip_after_mm'] > VAL).sum())} of {len(d)}")
     band = E["tip_after_mm"].between(*CUTS_MM)
     out.append(f"events in the {CUTS_MM[0]}-{CUTS_MM[1]} mm band: {int(band.sum())} of {len(E)} "
@@ -66,8 +69,9 @@ def main():
     K.columns = [f"{a}_{b}" for a, b in K.columns]
     K = K.reset_index()
     K.to_csv(thr / "tip_modes_by_condition.csv", index=False)
-    dmax = (R["fracB_cut2"] - R["fracB_cut1"]).abs().max()
-    out.append(f"largest per-run change in B fraction between the {CUTS_MM[0]} and {CUTS_MM[1]} mm cuts: {dmax:.3f}")
+    dmax = pd.concat([R["fracB_cut1"], R["fracB_cut2"], R["fracB"]], axis=1).agg(lambda x: x.max() - x.min(),
+                                                                                    axis=1).max()
+    out.append(f"largest per-run change in B fraction over cuts {CUTS_MM[0]} / {CUTS_MM[1]} / {VAL:.2f} mm: {dmax:.3f}")
     out.append(f"valley value used: {VAL:.2f} mm")
     txt = "\n".join(out)
     print(txt)

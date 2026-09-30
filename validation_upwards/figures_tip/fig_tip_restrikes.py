@@ -23,8 +23,11 @@ def main():
     C.style()
     D = C.per_run()
     t_tip = float(Path(C.THR / "T_TIP.txt").read_text().strip())
-    val = [ln for ln in (C.THR / "tip_modes.txt").read_text(encoding="utf-8").splitlines()
-           if ln.startswith("valley value used")][0].split(":")[1].strip()
+    txt = (C.THR / "tip_modes.txt").read_text(encoding="utf-8").splitlines()
+    val = [ln for ln in txt if ln.startswith("valley value used")][0].split(":")[1].strip()
+    dmax = [ln for ln in txt if ln.startswith("largest per-run change")][0].split(":")[1].strip()
+    nfr = sorted(D["n_frames"].unique())
+    nrec = len(D)
     fig, axs = plt.subplots(1, 3, figsize=(10.5, 3.2))
     data = [C.vs_re_panel(ax, D, col, lab) for ax, (col, lab) in zip(axs, PANELS)]
     axs[2].set_ylim(0, 1)
@@ -37,13 +40,15 @@ def main():
            "threshold/tip_restrikes_kept_by_run.csv, threshold/tip_modes_by_run.csv",
            f"""# Leading-tip re-strikes vs Re
 
-(a) Re-strikes per second of record (65 001 frames at 200 kfps). (b) Mean time between successive re-strikes.
+(a) Re-strikes per second of record ({", ".join(f"{int(x):,}" for x in nfr)} frames at 200 kfps). (b) Mean time between successive re-strikes.
 (c) Fraction of re-strikes whose new tip sits above {val} of the gap (Mode B: the arc re-strikes partway up
 the blades; Mode A: at the gap). A tip re-strike is counted when the tip falls by at least {t_tip} mm in one step,
 the smallest threshold at which single-step rises (which breakdown cannot produce) are at most 5 % of such falls in
-every gas. A fall across frames with no complete arc counts, so cycle times include the time between the arc failing
-and re-striking. Moving the Mode A/B cut anywhere between 1.0 and {val} changes any recording's Mode B fraction by at
-most 0.11. Open markers: single trials; filled: mean ± sd over trials. 113 recordings.""")
+every gas, pooled over all steps (for Ar–Air the falls between consecutive frames alone fail that bar; see
+tip_restrike_threshold_output.txt). The net fall from the previous extension peak must also be at least
+{t_tip} mm, with no single-step rise of that size after it (a one-frame spike is not a re-strike). A fall across frames with no complete arc counts, so cycle times include the time between the arc failing
+and re-striking. Moving the Mode A/B cut among 1.0, 2.0 and {val} changes any recording's Mode B fraction by at most {dmax}.
+Open markers: single trials; filled: mean ± sd over trials. {nrec} recordings.""")
 
 
 if __name__ == "__main__":

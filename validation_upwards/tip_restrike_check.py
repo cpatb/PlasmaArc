@@ -10,8 +10,12 @@ replaces the arc by a shorter one within one frame, so the tip FALLS by millimet
 break where no complete arc exists and the arc re-forms lower). A retreat made of many small steps is not a
 breakdown: it is the detected apex wandering (shape change, skeleton spur, dim apex).
 
-Per re-strike (indices into the detector's own frame list, raw unsmoothed tip):
-  fall_mm        tip(previous peak) - tip(marked minimum), mm
+Per re-strike (indices into the detector's own frame list, raw unsmoothed tip; "peak" = the raw maximum within +/-1
+entry of qa_restrike's smoothed peak, "minimum" = the raw minimum between that peak and the next smoothed peak,
+frame `frame_min`; `frame` keeps qa_restrike's own marked frame as the event id):
+  fall_mm        tip(peak) - tip(minimum), mm
+  rise_after_mm  largest single-step RISE after the largest fall, up to the minimum (a spike if >= the threshold)
+  tip_after_mm   tip(minimum) above the gap, mm: the re-strike height
   max_step_mm    largest single-step fall between those two frames (a "step" is one entry of the detector's frame
                  list, so it may span a break with no complete arc)
   step_gap_frames  cine frames spanned by that largest step (1 = consecutive frames)
@@ -72,21 +76,32 @@ def one_run(rd: Path):
     cons = np.diff(fr) == 1
     jit = step[cons]
     jit_sd = 1.4826 * np.median(np.abs(jit - np.median(jit))) / pxmm
-    rows = []
+    rows, win = [], []
     for i, r in enumerate(rk):
-        a, k = int(peaks[i]), int(r["idx"])         # previous peak, marked minimum (qa_restrike's own pairing)
+        # qa_restrike pairs rk[i] with the peaks (peaks[i], peaks[i+1]) and marks the SMOOTHED minimum between them.
+        # Read everything on the RAW tip instead (review 2026-09-30: the smoothed indices read the height ~1 px high
+        # and can put the only large fall after the marked frame): raw peak = raw max within +/-1 entry of the
+        # smoothed peak; re-strike = raw minimum between that peak and the next smoothed peak.
+        a_s, b = int(peaks[i]), int(peaks[i + 1])
+        lo = max(a_s - 1, 0)
+        a = lo + int(np.argmax(tip[lo:a_s + 2]))
+        k = a + int(np.argmin(tip[a:b + 1]))
         seg = -step[a:k] if k > a else np.array([0.0])
         j = int(np.argmax(seg)) if k > a else 0
         fall = (tip[a] - tip[k]) / pxmm
         ms = seg[j] / pxmm
-        rows.append(dict(frame=int(fr[k]), peak_frame=int(fr[a]), n_steps=k - a, fall_mm=fall, max_step_mm=ms,
+        # largest single-step RISE after the largest fall, up to the re-strike: a fall that is undone by a
+        # one-step rise before the minimum is a spike, not a re-strike
+        post = step[a + j + 1:k] if k > a + j + 1 else np.array([0.0])
+        rows.append(dict(frame=int(fr[int(r["idx"])]), frame_min=int(fr[k]), peak_frame=int(fr[a]), n_steps=k - a,
+                         fall_mm=fall, max_step_mm=ms, rise_after_mm=max(float(post.max()), 0.0) / pxmm,
                          step_gap_frames=int(fr[a + j + 1] - fr[a + j]) if k > a else 0,
                          step_share=ms / fall if fall > 0 else np.nan,
                          tip_after_mm=(tip[k] - erow) / pxmm,
                          centroid_drop=bool(((cdrop > fr[a]) & (cdrop <= fr[k])).any())))
+        win.append((int(fr[a]), int(fr[k])))
     ev = pd.DataFrame(rows)
     # how many centroid drops fall inside SOME tip retreat window
-    win = [(int(fr[int(peaks[i])]), int(fr[int(r["idx"])])) for i, r in enumerate(rk)]
     inside = sum(any(lo < c <= hi for lo, hi in win) for c in cdrop)
     summ = dict(run=rd.name, gas=meta["gas"], Re=meta["Re"], trial=meta["trial"], n_tip=len(ev),
                 jitter_sd_mm=jit_sd, cons_pairs=int(cons.sum()),

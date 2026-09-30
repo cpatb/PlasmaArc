@@ -9,7 +9,8 @@ import pandas as pd
 
 import _common as C
 
-BIN_MM = 0.25   # ~2.3 px at 9 px/mm: coarser than the 1 px (~0.11 mm) quantum of the tip row
+BIN_MM = 0.32   # ~3 px at the setups' 8.9-9.7 px/mm (2.85-3.11 px): close to a whole number of tip-row quanta, so
+                # bins do not alternate 2 and 3 pixel levels (review 2026-09-30: 0.25 mm did)
 
 
 def main():
