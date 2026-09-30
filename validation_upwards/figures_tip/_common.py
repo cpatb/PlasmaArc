@@ -21,7 +21,8 @@ sys.path.insert(0, str(REPO))
 import figstyle  # noqa: E402
 
 ROOT = Path(r"E:\BladeReactor_Upwards_analysis")
-OUT = ROOT / "figures_tip"
+OUT = Path(r"C:\Users\compl\Desktop\Plasma Arc\BLADE\BLADE_UPWARDS_45deg")   # the figure suite (author, 2026-09-30)
+CACHE = ROOT / "figures_tip" / "frames_cache.parquet"                     # derived; rebuilt by build_frames_cache.py
 THR = ROOT / "tip_restrike_check" / "threshold"
 GASES = ["Argon", "Air", "Ar-Air(1_1)", "Ar-CO2(1_1)", "CO2"]          # fastest to slowest (REPORT.md finding 2)
 LABEL = {"Argon": "Ar", "Air": "Air", "Ar-Air(1_1)": "Ar–Air 1:1", "Ar-CO2(1_1)": "Ar–CO$_2$ 1:1", "CO2": "CO$_2$"}
