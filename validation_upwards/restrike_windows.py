@@ -109,36 +109,48 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Re-strike wind
 body{{font-family:system-ui,sans-serif;margin:16px;background:#fff;color:#111}}
 .win{{border-top:2px solid #333;padding:10px 0 18px}} .sc{{overflow-x:auto;border:1px solid #bbb}}
 .wr{{position:relative;display:inline-block;cursor:crosshair}} .wr img{{display:block}}
-.mk{{position:absolute;top:0;width:3px;margin-left:-1px;background:rgba(255,40,40,.85);cursor:pointer}}
+.mk{{position:absolute;top:0;width:3px;margin-left:-1px;cursor:pointer}}
+.mA{{background:rgba(255,40,40,.9)}} .mB{{background:rgba(255,160,0,.95)}}
 #bar{{position:sticky;top:0;background:#fff;padding:8px 0;border-bottom:1px solid #999;z-index:5}}
 </style></head><body>
 <div id="bar"><b>Re-strike windows</b> ({n}). <span id="tot"></span>
 <button onclick="exportCsv()">Export clicks CSV</button></div>
 <p>Each image is height (vertical, gap = blue ticks near the bottom) against time (horizontal, ms below). A gliding
-arc draws a trace that climbs. <b>Click once on every re-strike</b>: where the trace jumps back down, or where a new
-trace starts at the gap. Click a red marker to remove it. Scroll sideways inside each image. Clicks are saved in this
-browser; export at the end.</p>
+arc draws a trace that climbs. Mark every re-strike you see:<br>
+&bull; <b>click</b> = re-strike back to the gap (red marker);<br>
+&bull; <b>shift-click</b> = partway re-strike, the top of the trace drops but not to the gap (orange marker).<br>
+Click a marker to remove it; shift-click a marker to switch red/orange. Scroll sideways inside each image. Marks are
+saved in this browser; export at the end. (Marks made before this change are kept as red.)</p>
 {wins}
 <script>
 const W={winjs};
 function k(c){{return 'win_'+c}}
-function get(c){{try{{return JSON.parse(localStorage.getItem(k(c))||'[]')}}catch(_){{return []}}}}
+function get(c){{let a=[];try{{a=JSON.parse(localStorage.getItem(k(c))||'[]')}}catch(_){{}}
+ return a.map(v=>typeof v==='number'?{{x:v,m:'A'}}:v)}}
 function put(c,a){{try{{localStorage.setItem(k(c),JSON.stringify(a))}}catch(_){{}}draw()}}
-function draw(){{let t=0;for(const w of W){{const wr=document.getElementById('wr_'+w.code),img=wr.querySelector('img');
- wr.querySelectorAll('.mk').forEach(e=>e.remove());const a=get(w.code);t+=a.length;
- document.getElementById('n_'+w.code).textContent=a.length+' clicked';
- for(const x of a){{const m=document.createElement('div');m.className='mk';m.style.left=(x*img.clientWidth/img.naturalWidth)+'px';
-  m.style.height=img.clientHeight+'px';m.onclick=ev=>{{ev.stopPropagation();put(w.code,get(w.code).filter(v=>v!==x))}};wr.appendChild(m)}}}}
- document.getElementById('tot').textContent=t+' clicks in total'}}
+function draw(){{let t=0,tb=0;for(const w of W){{const wr=document.getElementById('wr_'+w.code),img=wr.querySelector('img');
+ wr.querySelectorAll('.mk').forEach(e=>e.remove());const a=get(w.code);t+=a.length;const nb=a.filter(v=>v.m==='B').length;tb+=nb;
+ document.getElementById('n_'+w.code).textContent=(a.length-nb)+' to gap, '+nb+' partway';
+ for(const v of a){{const m=document.createElement('div');m.className='mk m'+v.m;m.style.left=(v.x*img.clientWidth/img.naturalWidth)+'px';
+  m.style.height=img.clientHeight+'px';m.onclick=ev=>{{ev.stopPropagation();const b=get(w.code);const i=b.findIndex(u=>u.x===v.x);
+  if(i<0)return;if(ev.shiftKey)b[i].m=b[i].m==='A'?'B':'A';else b.splice(i,1);put(w.code,b)}};wr.appendChild(m)}}}}
+ document.getElementById('tot').textContent=t+' marks ('+tb+' partway)'}}
 for(const w of W){{const wr=document.getElementById('wr_'+w.code);wr.addEventListener('click',ev=>{{
  const img=wr.querySelector('img'),r=img.getBoundingClientRect();
  const x=Math.round((ev.clientX-r.left)*img.naturalWidth/img.clientWidth);
- if(ev.clientY-r.top>img.clientHeight-{axis})return;const a=get(w.code);a.push(x);put(w.code,a)}})}}
+ if(ev.clientY-r.top>img.clientHeight-{axis})return;const a=get(w.code);a.push({{x:x,m:ev.shiftKey?'B':'A'}});put(w.code,a)}})}}
 window.addEventListener('load',draw);
-function exportCsv(){{let s='code,x_px\\n';for(const w of W)for(const x of get(w.code).sort((p,q)=>p-q))s+=w.code+','+x+'\\n';
+function exportCsv(){{let s='code,x_px,mode\\n';for(const w of W)for(const v of get(w.code).sort((p,q)=>p.x-q.x))s+=w.code+','+v.x+','+v.m+'\\n';
  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([s],{{type:'text/csv'}}));
  a.download='restrike_window_clicks.csv';a.click()}}
 </script></body></html>"""
+
+
+def write_page(out: Path, codes):
+    wins = "\n".join(f'<div class="win"><b>{c}</b> <span id="n_{c}"></span><div class="sc"><div class="wr" id="wr_{c}">'
+                     f'<img src="img/{c}.png"></div></div></div>' for c in codes)
+    (out / "windows.html").write_text(PAGE.format(n=len(codes), wins=wins, axis=AXIS_PX,
+                                                  winjs=json.dumps([{"code": c} for c in codes])), encoding="utf-8")
 
 
 def build(root: Path):
@@ -156,10 +168,7 @@ def build(root: Path):
     W["bin"] = bins
     W["n"] = (W["n"] // W["bin"]) * W["bin"]
     W.to_csv(out / "windows_key.csv", index=False)
-    wins = "\n".join(f'<div class="win"><b>{c}</b> <span id="n_{c}"></span><div class="sc"><div class="wr" id="wr_{c}">'
-                     f'<img src="img/{c}.png"></div></div></div>' for c in W["code"])
-    (out / "windows.html").write_text(PAGE.format(n=len(W), wins=wins, axis=AXIS_PX,
-                                                  winjs=json.dumps([{"code": c} for c in W["code"]])), encoding="utf-8")
+    write_page(out, list(W["code"]))
     print(f"wrote {out / 'windows.html'}; windows_key.csv is sealed until grading")
 
 
@@ -176,36 +185,53 @@ def match(clicks: np.ndarray, events: np.ndarray):
 
 
 def grade(root: Path, clicks_csv: Path):
+    """Amendment A1 (WINDOWS_PLAN.md): clicks carry a mode (A = back to the gap, B = partway). Every click is matched
+    to the KEPT pipeline events regardless of mode; completeness is then reported per click mode. The registered
+    rate rule is applied to MODE A only (counted Mode A rate = counted rate x (1 - Mode B fraction)). Mode B
+    completeness is on the subset the author could see and is reported as an optimistic figure, with no rule."""
     from statsmodels.stats.proportion import proportion_confint
     W = pd.read_csv(root / "restrike_windows" / "windows_key.csv")
     Cl = pd.read_csv(clicks_csv)
-    E = pd.read_csv(root / "tip_restrike_check" / "threshold" / "tip_restrike_events_kept.csv")
+    if "mode" not in Cl:
+        Cl["mode"] = "A"
+    Cl["mode"] = Cl["mode"].fillna("A")
+    thr = root / "tip_restrike_check" / "threshold"
+    E = pd.read_csv(thr / "tip_restrike_events_kept.csv")
+    fb = pd.read_csv(thr / "tip_modes_by_condition.csv").set_index(["gas", "Re"])["fracB_mean"]
     rows, hits = [], {}
     for _, w in W.iterrows():
-        c = Cl.loc[Cl["code"] == w["code"], "x_px"].to_numpy(int)
+        cw = Cl[Cl["code"] == w["code"]]
+        c = cw["x_px"].to_numpy(int)
         cf_ = w["i0"] + c * w["bin"] + w["bin"] // 2                       # click -> centre frame of its bin
         ev = E[(E["run"] == w["run"]) & (E["frame_min"] >= w["i0"]) & (E["frame_min"] < w["i0"] + w["n"])]
         mk, unk = match(cf_, ev.loc[ev["kept"], "frame_min"].to_numpy())
         ma, _ = match(cf_, ev["frame_min"].to_numpy())
-        hits[w["code"]] = mk
-        H, M = len(c), int(mk.sum())
-        lo, hi = proportion_confint(M, H, method="wilson") if H else (np.nan, np.nan)
-        rows.append(dict(code=w["code"], gas=w["gas"], Re=w["Re"], run=w["run"], window_ms=w["n"] / 200.0, H=H,
-                         kept_in_window=int(ev["kept"].sum()), M_kept=M, kept_unmatched=unk,
-                         M_any_detector=int(ma.sum()), C=M / H if H else np.nan, C_lo=lo, C_hi=hi,
-                         measured=H >= 5, rate_counted=w["rate_counted"]))
-    T = pd.DataFrame(rows).sort_values(["gas", "Re"])
+        fB = float(fb.loc[(w["gas"], w["Re"])])
+        for mode, rate in (("A", w["rate_counted"] * (1 - fB)), ("B", w["rate_counted"] * fB), ("all", w["rate_counted"])):
+            sel = np.ones(len(c), bool) if mode == "all" else (cw["mode"].to_numpy() == mode)
+            h = mk[sel]
+            hits[(w["code"], mode)] = h
+            H, M = len(h), int(h.sum())
+            lo, hi = proportion_confint(M, H, method="wilson") if H else (np.nan, np.nan)
+            rows.append(dict(code=w["code"], gas=w["gas"], Re=w["Re"], mode=mode, window_ms=w["n"] / 200.0, H=H,
+                             M_kept=M, M_any_detector=int(ma[sel].sum()), C=M / H if H else np.nan, C_lo=lo, C_hi=hi,
+                             kept_in_window=int(ev["kept"].sum()) if mode == "all" else np.nan,
+                             kept_unmatched=unk if mode == "all" else np.nan,
+                             measured=H >= 5, rate_counted=rate))
+    T = pd.DataFrame(rows).sort_values(["mode", "gas", "Re"])
     T["rate_corrected"] = np.where(T["measured"], T["rate_counted"] / T["C"], np.nan)
-    print(T.drop(columns=["run"]).round(3).to_string(index=False))
+    print(T.round(3).to_string(index=False))
     rng = np.random.default_rng(SEED)
-    for gas, d in T.groupby("gas"):
+    print("\nRegistered rule, applied to MODE A (amendment A1):")
+    for gas, d in T[T["mode"] == "A"].groupby("gas"):
         d = d.sort_values("Re")
         lo_, hi_ = d.iloc[0], d.iloc[-1]
         if not (lo_["measured"] and hi_["measured"]):
-            print(f"{gas}: rise NOT MEASURED (H < 5 at an end)")
+            print(f"  {gas}: rise NOT MEASURED (fewer than 5 Mode A clicks at an end)")
             continue
+
         def boot(code):
-            h = hits[code]
+            h = hits[(code, "A")]
             return rng.choice(h, (N_BOOT, len(h)), replace=True).mean(1)
         cl, ch = boot(lo_["code"]), boot(hi_["code"])
         with np.errstate(divide="ignore"):
@@ -213,9 +239,12 @@ def grade(root: Path, clicks_csv: Path):
         q = np.nanpercentile(ratio, [2.5, 97.5])
         pt = hi_["rate_corrected"] / lo_["rate_corrected"]
         verdict = "QUOTABLE rise" if q[0] > 1 else ("QUOTABLE fall" if q[1] < 1 else "no resolved Re dependence")
-        print(f"{gas}: corrected rate Re{lo_['Re']} {lo_['rate_corrected']:.0f} /s -> Re{hi_['Re']} "
+        print(f"  {gas}: corrected Mode A rate Re{lo_['Re']} {lo_['rate_corrected']:.0f} /s -> Re{hi_['Re']} "
               f"{hi_['rate_corrected']:.0f} /s, ratio {pt:.2f} [{q[0]:.2f}, {q[1]:.2f}] -> {verdict} "
-              f"(counted-rate ratio {hi_['rate_counted'] / lo_['rate_counted']:.2f})")
+              f"(counted Mode A ratio {hi_['rate_counted'] / lo_['rate_counted']:.2f})")
+    B = T[(T["mode"] == "B") & (T["H"] > 0)]
+    print("\nMode B (optimistic: only the partway re-strikes the author could see): "
+          + ("; ".join(f"{r.gas} Re{r.Re}: {r.M_kept}/{r.H}" for r in B.itertuples()) or "none clicked"))
     T.to_csv(root / "restrike_windows" / "windows_graded.csv", index=False)
 
 
@@ -225,6 +254,8 @@ if __name__ == "__main__":
         preview(root, sys.argv[3], int(sys.argv[4]), int(sys.argv[5]))
     elif cmd == "build":
         build(root)
+    elif cmd == "page":        # rewrite windows.html only (codes from the key; nothing else is read or printed)
+        write_page(root / "restrike_windows", list(pd.read_csv(root / "restrike_windows" / "windows_key.csv")["code"]))
     elif cmd == "grade":
         grade(root, Path(sys.argv[3]))
     else:
