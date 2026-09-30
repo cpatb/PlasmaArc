@@ -355,6 +355,7 @@ def main():
     m = vel_cnt > 0
     vmap[m] = vel_sum[m] / vel_cnt[m]
     np.save(out_dir / 'velocity_map_local.npy', vmap * 1000.0)   # mm/s for pipeline consistency
+    np.save(out_dir / 'velocity_map_count.npy', vel_cnt)          # frames per pixel (for a minimum-count mask)
     n_px = int(m.sum())
     print("Local-velocity map: %d advancing-front frames contributed, %d pixels populated"
           % (used, n_px))

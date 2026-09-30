@@ -24,7 +24,7 @@ MIN_ARC_PX = 22          # run_blade_upwards.MIN_ARC_PX (speckle floor)
 
 def one(rd: Path):
     out = rd / "velocity_map_local.npy"
-    if out.exists():
+    if out.exists() and (rd / "velocity_map_count.npy").exists():
         return rd.name, "skip (exists)", 0.0
     m = json.loads((rd / "run_metadata.json").read_text(encoding="utf-8"))
     det, pxmm = m["detector"], float(m["calibration"]["px_per_mm"])
