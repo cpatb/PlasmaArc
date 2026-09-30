@@ -49,7 +49,11 @@ for cine in sorted(data_root.rglob("*.cine")):
                           and m.get("npoint_method") == rbu.NPOINT_METHOD and m.get("npoint_n") == rbu.NPOINT_N)
         cal = m.get("calibration", {})
         ah = cal.get("auto_vs_hand_end_px")
-        r["auto_vs_hand_max_px"] = max(ah) if ah else None
+        # the cross-check is only informative where the automatic calibration passed its own checks: on
+        # spot-dominated videos it fails and its gap ends are spot feet, not the gap (e.g. Ar-CO2 Re3156 t3)
+        auto_ok = m.get("calibration_auto", {}).get("status") == "OK"
+        r["auto_cal_status"] = m.get("calibration_auto", {}).get("status")
+        r["auto_vs_hand_max_px"] = max(ah) if (ah and auto_ok) else None
         r["flags"] = " | ".join(cal.get("flags", []))
         r["px_per_mm"] = cal.get("px_per_mm")
         r["complete_frames"] = m.get("frames", {}).get("arc_complete")
