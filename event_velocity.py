@@ -1253,8 +1253,11 @@ def main():
         plot_distribution_by_mode(events, out_dir)
         plot_scatter(events, out_dir)
         plot_comparison(df_merged, out_dir)
-        plot_dynamics_density(dyn, out_dir)
-        plot_dynamics_heatmap(dyn, events, out_dir)
+        if dyn is not None and len(dyn) and 'vel_ms' in dyn.columns:   # no advancing-front frames -> no dynamics
+            plot_dynamics_density(dyn, out_dir)
+            plot_dynamics_heatmap(dyn, events, out_dir)
+        else:
+            print("  [skip] dynamics figures — no per-event dynamics rows")
         plot_nucleation_distribution(events, out_dir)
     else:
         print("  [skip] event/velocity figures — no events fitted "
