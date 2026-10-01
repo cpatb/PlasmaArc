@@ -4,7 +4,14 @@ Writes E:\\BladeReactor_Upwards_analysis\\data_package\\:
   recordings.csv   one row per analysed recording (113)
   conditions.csv   one row per gas x Re: mean, sd over trials; tip-velocity estimator range and a resolved flag
   restrikes.csv    one row per COUNTED leading-tip re-strike (kept events only)
+  frames/<recording>.csv   every frame of every analysed recording (author 2026-10-01: "split it per recording")
   README.txt       column definitions, units, and what is deliberately left out
+and E:\\BladeReactor_Upwards_analysis\\data_package.zip (the same folder, for sending).
+
+Per-frame values are filled ONLY on the frames on which the analysis uses them, with the flags beside them:
+tip height on arc-detected non-flash frames (tip_restrike_check.load_tip), arc length and velocity on complete
+non-flash frames (arc_filter.valid_frames / build_frames_cache). The raw file also holds a tip row on some frames with
+no detected arc; the analysis never reads it, so it is not exported.
 
 Only quantities the analysis treats as trustworthy are exported (LEADING_TIP_FINDINGS.md, figure_suite/README.md).
 Re-strike RATES and MODE B FRACTIONS are NOT exported: the pipeline misses a Re- and gas-dependent share of real
@@ -14,12 +21,58 @@ per-condition table reproduces the figure suite's own numbers.
 
 usage: python export_data_package.py
 """
+import json
+import zipfile
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
 import _common as C
 
 OUT = C.ROOT / "data_package"
+ZIP = C.ROOT / "data_package.zip"
+FRAME_COLS = ["frame", "arc_detected", "arc_complete", "is_flash", "arc_length_px", "arc_tip_row", "local_vel_ms",
+              "local_speed_ms"]
+
+
+def frames(D, rec):
+    """frames/<recording>.csv: every frame; values only where the analysis uses them. Anchored per recording against
+    the aggregate table (arc length median, tip height p90) and recordings.csv (velocity median), as
+    build_frames_cache.py does."""
+    (OUT / "frames").mkdir(exist_ok=True)
+    tot = dict(frames=0, detected=0, complete=0, velocity=0, det_ne_complete=0)
+    for _, r in D.iterrows():
+        rd = next((C.ROOT / "runs_annotated").rglob(f"{r['stem']}/run_metadata.json")).parent
+        m = json.loads((rd / "run_metadata.json").read_text(encoding="utf-8"))
+        pxmm, H, gap_row = float(m["calibration"]["px_per_mm"]), int(m["H"]), float(m["calibration"]["gap_row"])
+        d = pd.read_csv(rd / "measurements_all_events.csv", usecols=FRAME_COLS)
+        if len(d) != int(m["n_frames"]) or not (d["frame"].diff().dropna() == 1).all():
+            raise SystemExit(f"{r['stem']}: frames not 0..n_frames-1 contiguous")
+        det = (d["arc_detected"] == 1) & (d["is_flash"] == 0)
+        com = (d["arc_complete"] == 1) & (d["is_flash"] == 0)
+        h = ((d["arc_tip_row"] - ((H - 1) - gap_row)) / pxmm).where(det)       # same formula as build_frames_cache
+        L = (d["arc_length_px"] / pxmm).where(com)
+        v = d["local_vel_ms"].where(com)
+        v = v.mask(v.abs() <= C.ZERO_EPS, 0.0)                                   # stored +/-1e-13 for a stalled tip
+        s = d["local_speed_ms"].where(com)
+        if not (np.isclose(L.median(), r["arc_len_mm_med"], rtol=0, atol=1e-9)
+                and np.isclose(np.nanpercentile(h[com], 90), r["tip_height_above_gap_mm_p90"], rtol=0, atol=1e-9)
+                and np.isclose(v.median(), rec.loc[r["stem"], "tip_velocity_median_all_frames_m_s"], rtol=1e-4)):
+            raise SystemExit(f"{r['stem']}: per-frame values do not reproduce the summary tables")
+        out = pd.DataFrame({"frame": d["frame"], "time_ms": d["frame"] / float(r["fps"]) * 1e3,
+                            "arc_detected": d["arc_detected"].astype(int), "arc_complete": d["arc_complete"].astype(int),
+                            "is_flash": d["is_flash"].astype(int), "tip_height_above_gap_mm": h,
+                            "arc_length_mm": L, "tip_velocity_m_s": v, "tip_speed_2d_m_s": s})
+        with open(OUT / "frames" / f"{r['stem']}.csv", "w", encoding="utf-8", newline="\n") as f:
+            out.to_csv(f, index=False, float_format=f"%.{SIG}g", lineterminator="\n")
+        tot["frames"] += len(d)
+        tot["detected"] += int(det.sum())
+        tot["complete"] += int(com.sum())
+        tot["velocity"] += int(v.notna().sum())
+        tot["det_ne_complete"] += int((det != com).sum())
+    print(f"frames/: {len(D)} files; {tot}; every recording reproduced its summary values")
+    return tot
 SIG = 5   # significant figures written: well above any quantity's own precision, readable in a spreadsheet
 
 
@@ -124,6 +177,15 @@ FILES
   recordings.csv  one row per recording
   conditions.csv  one row per gas and Re: mean and sd over trials, plus the tip-velocity estimator range
   restrikes.csv   one row per counted re-strike of the leading arc tip
+  frames/         one CSV per recording, one row per frame ({n_all} frames in all), columns:
+                    frame, time_ms (frame / fps)
+                    arc_detected, arc_complete, is_flash (1/0): arc_complete = attached to both blades
+                    tip_height_above_gap_mm   filled on arc-detected, non-flash frames
+                    arc_length_mm, tip_velocity_m_s, tip_speed_2d_m_s   filled on complete, non-flash frames;
+                      tip_velocity_m_s is also blank where the tip is not advancing (no velocity defined)
+                  A blank cell means the analysis does not use that value on that frame, not a measured zero.
+                  A stalled tip's velocity is written as exactly 0 (stored internally as +/-1e-13).
+                  These are the inputs of every summary above: per recording they reproduce recordings.csv.
 
 DEFINITIONS
   Leading tip: the highest point of the arc (furthest from the gap along the blades).
@@ -166,11 +228,22 @@ def main():
     write(rec, "recordings.csv", index=True)
     write(T, "conditions.csv")
     write(ev, "restrikes.csv")
+    tot = frames(D, rec)
     nf = rec["n_frames"]
-    (OUT / "README.txt").write_text(README.format(git=C.git_hash(), n_rec=len(rec),
+    (OUT / "README.txt").write_text(README.format(git=C.git_hash(), n_rec=len(rec), n_all=tot["frames"],
                                                   n_frames_note=f"{int(nf.min())}-{int(nf.max())} frames each"),
                                     encoding="utf-8", newline="\n")
     print(f"wrote {OUT / 'README.txt'}")
+    files = sorted(p for p in OUT.rglob("*") if p.is_file())
+    with zipfile.ZipFile(ZIP, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        for p in files:
+            z.write(p, Path("data_package") / p.relative_to(OUT))
+    with zipfile.ZipFile(ZIP) as z:
+        bad = z.testzip()
+        n = len(z.namelist())
+    if bad or n != len(files):
+        raise SystemExit(f"zip check failed: bad {bad}, {n} members vs {len(files)} files")
+    print(f"wrote {ZIP}: {n} files, {ZIP.stat().st_size / 1e6:.1f} MB (CRC verified)")
 
 
 if __name__ == "__main__":
