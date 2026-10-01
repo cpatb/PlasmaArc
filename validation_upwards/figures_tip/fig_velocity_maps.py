@@ -61,7 +61,7 @@ def main():
     C.style()
     D = C.per_run()
     res = sorted(D["Re"].unique())
-    fig, axs = plt.subplots(len(C.GASES), len(res), figsize=(2.0 * len(res), 2.1 * len(C.GASES)),
+    fig, axs = plt.subplots(len(C.GASES), len(res), figsize=(C.DOUBLE_W + 0.5, 7.8),
                             sharex=True, sharey=True, squeeze=False)
     rows, missing = [], []
     for i, gas in enumerate(C.GASES):
@@ -86,9 +86,9 @@ def main():
         vmax = float(np.percentile(vals, PCT)) if vals.size else 1.0
         for j, Re in enumerate(res):
             ax = axs[i, j]
-            ax.set_facecolor("0.93")
+            ax.set_facecolor(C.MAP_BG)            # the paper nephogram's background
             if Re not in grids:
-                ax.text(0.5, 0.5, "—", transform=ax.transAxes, ha="center", va="center", color="0.5")
+                ax.text(0.5, 0.5, "—", transform=ax.transAxes, ha="center", va="center", color="0.6")
             else:
                 V, ex, ey, nt, ntot = grids[Re]
                 im = ax.imshow(V, origin="lower", extent=[ex[0], ex[-1], ey[0], ey[-1]], cmap="plasma", vmin=0,
@@ -97,22 +97,23 @@ def main():
                 rows.append(dict(gas=gas, Re=Re, trials_used=nt, trials=ntot, bins=int(ok.sum()),
                                  v_mean_over_bins=float(np.nanmean(V)) if ok.any() else np.nan, row_vmax=vmax))
                 if nt < ntot:
-                    ax.text(0.03, 0.03, f"{nt}/{ntot} trials", transform=ax.transAxes, fontsize=6)
-            ax.axhline(0, color="0.5", lw=0.5, ls=":")
+                    ax.text(0.03, 0.03, f"{nt}/{ntot} trials", transform=ax.transAxes, fontsize=6, color="white")
+            ax.axhline(0, color="0.75", lw=0.5, ls=":")
             if i == 0:
-                ax.set_title(f"Re {Re}", fontsize=9)
+                ax.set_title(f"Re: {Re}", fontsize=9)
             if j == 0:
-                ax.set_ylabel(f"{C.LABEL[gas]}\nheight (mm)", fontsize=8)
+                ax.set_ylabel(f"{C.LABEL[gas]}\nHeight (mm)", fontsize=8)
+                C.panel(ax, "abcde"[i], x=0.05, y=0.95, color="white")
             if i == len(C.GASES) - 1:
                 ax.set_xlabel("x (mm)", fontsize=8)
         if grids:
             cb = fig.colorbar(im, ax=axs[i, :].tolist(), fraction=0.012, pad=0.01)
-            cb.set_label("m/s", fontsize=7)
+            cb.set_label("Velocity (m/s)", fontsize=7)
             cb.ax.tick_params(labelsize=6)
     axs[0, 0].set_xlim(*X_RANGE), axs[0, 0].set_ylim(*Y_RANGE)
     for ax in axs.ravel():
         ax.set_aspect("equal")
-        ax.tick_params(labelsize=6)
+        ax.tick_params(labelsize=6, which="both", color="white")
     print(f"maps missing for {len(missing)} recordings" + (f": {missing}" if missing else ""))
     C.save(fig, "fig_velocity_maps", pd.DataFrame(rows),
            f"validation_upwards/figures_tip/fig_velocity_maps.py; {BIN_MM} mm bins; min {MIN_COUNT} frames per bin; "
@@ -123,7 +124,7 @@ Mean leading-tip velocity over the frames in which the arc covered each point, o
 trials pooled (weighted by frame count) on a common {BIN_MM} mm grid centred on each recording's own hand-annotated
 gap (dotted line: the gap height). The value at a point is the TIP velocity of the frames in which the arc covered it
 (the J-suite definition), not the local speed of that piece of arc. The mean includes stalled frames as zero, which is
-what the pixel-quantised 5-frame velocity needs. Grey: fewer than {MIN_COUNT} frames. **Colour scale per row** (0 to
+what the pixel-quantised 5-frame velocity needs. Dark background: fewer than {MIN_COUNT} frames. **Colour scale per row** (0 to
 the row's 97th percentile, colour bar on the right): compare Re within a gas by colour; compare gases by the colour-bar
 numbers, not by colour. At the lowest Re of the CO₂ gases the underlying velocities are not resolved (fig_tip_kinematics).""")
 

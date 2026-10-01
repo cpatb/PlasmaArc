@@ -26,6 +26,7 @@ D_NOZZLE_M = 0.6e-3
 T_K, P_PA = 293.15, 101325.0
 PURE = {"Air": "Air", "Argon": "Argon", "CO2": "CO2"}
 EST = ["med", "med_nz", "mean", "agg"]
+LOG_YLIM = (0.1, 10.0)   # m/s, panel (a)
 NO_FIT = {"CO2"}   # see the loop: its low-Re points are the spot regime, not a power law
 
 
@@ -49,7 +50,7 @@ def main():
     V = V[V["gas"].isin(PURE)].copy()
     V["U"] = V["Re"] * V["gas"].map({g: m / r for g, (m, r, _) in pr.items()}) / D_NOZZLE_M
     V["mid"] = V[EST].mean(axis=1)
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(9.5, 3.4))
+    fig, (a1, a2) = plt.subplots(2, 1, figsize=(C.SINGLE_W, 5.6))
     rows, fits = [], []
     for gas in [g for g in C.GASES if g in PURE]:
         c = V[V["gas"] == gas].sort_values("Re")
@@ -67,21 +68,27 @@ def main():
             lab = f"{C.LABEL[gas]} (slope {min(slopes):.2f}–{max(slopes):.2f})"
         for ax, s in ((a1, 1.0), (a2, 1.0 / c["U"])):
             ax.errorbar(c["U"], c["mid"] * s, yerr=[(c["mid"] - c["lo"]) * s, (c["hi"] - c["mid"]) * s],
-                        fmt=C.MARK[gas], color=C.COLOR[gas], ms=4.5, capsize=2, label=lab)
+                        label=lab, **C.gas_err(gas))
         if gas == "Air":
             for ax, y in ((a1, c["mid"]), (a2, c["mid"] / (c["U"] * note))):
-                ax.plot(c["U"] * note, y, C.MARK[gas], mfc="none", mec=C.COLOR[gas], ms=4.5,
+                ax.plot(c["U"] * note, y, C.MARK[gas], mfc="white", mec=C.EDGE, mew=0.8, ms=5.5, zorder=3,
                         label="Air, Re × μ$_{Ar}$/μ$_{Air}$" if ax is a1 else None)
         rows.append(c.assign(slope_min=min(slopes) if slopes else np.nan, slope_max=max(slopes) if slopes else np.nan))
     Ma_max = float(D["Ma"].max())
     print("\n".join(fits))
     a1.set_xscale("log"), a1.set_yscale("log")
-    a1.set_xlabel("nozzle exit velocity U (m/s)"), a1.set_ylabel("tip velocity (m/s)")
-    a2.set_xlabel("nozzle exit velocity U (m/s)"), a2.set_ylabel("tip velocity / U")
+    # fixed log range: an estimator range whose low end is a stalled-frame median (0, stored as 1e-13) cannot be drawn
+    # on a log axis and would otherwise stretch it to 1e-13; such bars run off the bottom (stated in the caption)
+    a1.set_ylim(*LOG_YLIM)
+    off = V[V["lo"] < LOG_YLIM[0]]
+    off_txt = ", ".join(f"{C.LABEL[g].replace('$_2$', '₂')} Re {r}" for g, r in off[["gas", "Re"]].values) or "none"
+    print(f"estimator-range bars running below {LOG_YLIM[0]} m/s in (a): {off_txt}")
+    a1.set_xlabel("Nozzle Exit Velocity U (m/s)"), a1.set_ylabel("Tip Velocity (m/s)")
+    a2.set_xlabel("Nozzle Exit Velocity U (m/s)"), a2.set_ylabel("Tip Velocity / U")
     a2.set_xlim(0, None), a2.set_ylim(0, None)
-    a1.legend(fontsize=7, frameon=False, loc="upper left")
+    C.legend(a1, loc="lower right", title="Gas")
     for ax, t in zip((a1, a2), "ab"):
-        ax.text(0.97, 0.05, f"({t})", transform=ax.transAxes, ha="right")
+        C.panel(ax, t)
     fig.tight_layout()
     T = pd.concat(rows, ignore_index=True)
     C.save(fig, "fig_flow_scaling", T,
@@ -98,7 +105,8 @@ Re labels are U d / ν with these properties; U reaches Mach {Ma_max:.2f}, and a
 change the slopes by a few hundredths; the nozzle-to-gap distance is unknown, so the fraction of U is partly set by
 jet decay before the arc. Within a gas U is proportional to Re, so a slope only restates that the tip speeds up with
 Re; the information is in the comparison BETWEEN gases. Only the pure gases are drawn (mixture viscosities need a
-mixing rule). Fits: {'; '.join(fits)}.""")
+mixing rule). In (a) the axis stops at {LOG_YLIM[0]} m/s; range bars whose lower end is a zero median (stalled
+frames) run off the bottom ({off_txt}). Fits: {'; '.join(fits)}.""")
 
 if __name__ == "__main__":
     main()

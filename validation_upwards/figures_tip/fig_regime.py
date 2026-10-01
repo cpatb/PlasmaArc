@@ -14,17 +14,18 @@ import _common as C
 def main():
     C.style()
     D = C.per_run()
-    fig, ax = plt.subplots(figsize=(4.6, 3.3))
-    data = C.vs_re_panel(ax, D, "frac_complete", "complete-arc fraction of frames")
+    fig, ax = plt.subplots(figsize=(C.SINGLE_W, 2.9))
+    data = C.vs_re_panel(ax, D, "frac_complete", "Complete-Arc Fraction")
     ax.set_ylim(0, 1)
-    ax.legend(fontsize=7, frameon=False, loc="upper right", bbox_to_anchor=(1.0, 0.8))
+    C.legend(ax, handles=C.gas_handles(), title="Gas", loc="center", bbox_to_anchor=(0.62, 0.62), ncol=2,
+             columnspacing=0.8)
     fig.tight_layout()
     C.save(fig, "fig_regime", data,
            "validation_upwards/figures_tip/fig_regime.py; input aggregate_annotated/per_recording.csv",
            """# Discharge regime
 
 Fraction of all frames holding a complete arc (attached to both blades within 7 px of the hand-drawn edges, not a
-flash), per recording (open) and mean ± sd over trials (filled). Argon glides almost all the time (≈ 0.84) at every
+flash), per recording (small grey open markers) and mean ± sd over trials (coloured). Argon glides almost all the time (≈ 0.84) at every
 Re; Air and Ar–Air sit near 0.33–0.42; CO₂ and Ar–CO₂ are spot-dominated at Re 3156 (0.04–0.06) and rise to ≈ 0.3
 by Re 4969 (Ar–CO₂) and Re 5875 (CO₂); exact values in data/fig_regime.csv. Only large contrasts are resolved: neighbouring-Re steps and the Air vs Ar–Air difference are
 within the detector's sensitivity.""")

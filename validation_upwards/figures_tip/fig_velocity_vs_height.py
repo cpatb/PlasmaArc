@@ -39,9 +39,9 @@ def main():
     print(f"velocity frames {len(D)}; above {EDGES[-1]} mm (not drawn): {int((D['h_mm'] > EDGES[-1]).sum())}")
     D["hb"] = pd.cut(D["h_mm"], EDGES)
     D["stall"] = (D["v_ms"].abs() <= C.ZERO_EPS).astype(float)
-    fig, axs = plt.subplots(2, len(C.GASES), figsize=(13, 5.4), sharex=True, sharey="row",
-                            gridspec_kw={"height_ratios": [2, 1]})
-    cmap = plt.get_cmap("viridis")
+    fig, axs2 = plt.subplots(len(C.GASES), 2, figsize=(C.DOUBLE_W, 8.6), sharex=True, sharey="col",
+                             gridspec_kw={"width_ratios": [2, 1]})
+    axs = axs2.T                       # axs[0, j] velocity, axs[1, j] stalled share, one ROW per gas
     rows, ymax = [], 0.0
     for j, gas in enumerate(C.GASES):
         for Re in RE_SHOW:
@@ -49,7 +49,7 @@ def main():
             if d.empty:
                 continue
             ntr = d["trial"].nunique()
-            col = cmap((Re - 2250) / (8594 - 2250))
+            col = C.re_color(Re)
             # stalled share uses every velocity frame; the median uses moving frames only
             dz = d.assign(v_ms=d["stall"])
             sz = per_bin(dz, ntr, "mean")
@@ -59,29 +59,34 @@ def main():
                 if s.empty:
                     continue
                 x = np.array([b.mid for b in s.index])
-                ax.fill_between(x, s["min"], s["max"], color=col, alpha=0.25, lw=0)
-                ax.plot(x, s["mean"], "o-", color=col, ms=3, lw=1.2, label=f"{Re}" if name != "stalled_share" else None)
+                ax.fill_between(x, s["min"], s["max"], facecolor=col, alpha=0.45, edgecolor="0.55", lw=0.4)
+                ax.plot(x, s["mean"], "o-", color=col, ms=3.5, mec=C.EDGE, mew=0.6,
+                        label=f"{Re}" if name != "stalled_share" else None, **C.outlined(1.1))
                 rows.append(pd.DataFrame({"gas": gas, "Re": Re, "quantity": name, "h_mid_mm": x,
                                           "mean_of_trials": s["mean"].values, "min_trial": s["min"].values,
                                           "max_trial": s["max"].values, "n_trials": ntr}))
                 if name == "v_moving_median":
                     ymax = max(ymax, s["max"].max())
-        axs[0, j].set_title(C.LABEL[gas], fontsize=10)
-        axs[1, j].set_xlabel("tip height above gap (mm)")
+        C.tag(axs[0, j], C.LABEL[gas], loc="upper right")
+        C.panel(axs[0, j], "acegi"[j])
+        C.panel(axs[1, j], "bdfhj"[j])
         axs[1, j].set_xlim(0, EDGES[-1])
     axs[0, 0].set_ylim(0, 1.05 * ymax)
     axs[1, 0].set_ylim(0, 1)
-    axs[0, 0].set_ylabel("tip velocity, moving frames (m/s)")
-    axs[1, 0].set_ylabel("stalled share")
-    axs[0, 0].legend(title="Re", fontsize=7, title_fontsize=8, frameon=False, loc="upper left", ncol=2)
+    for ax in axs2[-1]:
+        ax.set_xlabel("Tip Height Above Gap (mm)")
+    axs2[2, 0].set_ylabel("Tip Velocity, Moving Frames (m/s)")
+    axs2[2, 1].set_ylabel("Stalled Share")
+    C.legend(axs[0, -1], title="Re", loc="upper center", ncol=3, columnspacing=0.8,
+             handlelength=1.6)
     fig.tight_layout()
     C.save(fig, "fig_velocity_vs_height", pd.concat(rows, ignore_index=True),
            f"validation_upwards/figures_tip/fig_velocity_vs_height.py; 1 mm bins; >= {MIN_FRAMES} frames per trial "
            "per bin, all trials required; moving = |v| > 1e-9; input frames_cache.parquet",
            f"""# Tip velocity against height
 
-Top: median local tip velocity over moving frames against the leading tip's height above the minimum gap, one column
-per gas, one line per Re (every other Re step). Bottom: the share of stalled frames (the whole-pixel tip did not move
+Left column: median local tip velocity over moving frames against the leading tip's height above the minimum gap, one row
+per gas, one line per Re (navy low Re → pale yellow high Re) (every other Re step). Right column: the share of stalled frames (the whole-pixel tip did not move
 over the 5-frame fit), which is shown separately because it changes with height and would otherwise create a trend
 in a median. Lines: mean over trials of each trial's statistic in 1 mm bins; bands: min–max over trials. A bin is
 drawn only where every trial has ≥ {MIN_FRAMES} velocity frames. Velocities exist only on advancing-front frames and

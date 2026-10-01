@@ -16,6 +16,7 @@ one trial each.
 usage: python fig_discharge_time_bound.py
 """
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 
@@ -42,16 +43,17 @@ def main():
     D = C.per_run()
     E = eye_intervals()
     print("by-eye windows used:\n" + E.round(3).to_string(index=False))
-    fig, ax = plt.subplots(figsize=(5.2, 3.6))
-    data = C.vs_re_panel(ax, D, "cycle_kept_ms", "mean discharge time, upper bound (ms)")
+    fig, ax = plt.subplots(figsize=(C.SINGLE_W, 3.0))
+    data = C.vs_re_panel(ax, D, "cycle_kept_ms", "Mean Discharge Time, Upper Bound (ms)")
     for gas in C.GASES:
         e = E[E["gas"] == gas]
         if len(e):
-            ax.plot(e["Re"], e["eye_interval_ms"], "*", ms=10, mfc="none", mec=C.COLOR[gas], mew=1.2)
-    ax.plot([], [], "*", ms=10, mfc="none", mec="0.3", label="by eye (one window)")
-    ax.set_yscale("log")
+            ax.plot(e["Re"], e["eye_interval_ms"], "*", ms=11, mfc=C.COLOR[gas], mec=C.EDGE, mew=0.8, zorder=4)
+        ax.set_yscale("log")
     ax.set_ylim(0.5, 100)
-    ax.legend(fontsize=7, frameon=False, loc="upper right")
+    h = C.gas_handles() + [Line2D([0], [0], marker="*", ls="none", ms=11, mfc="white", mec=C.EDGE, mew=0.8,
+                                    label="by eye")]
+    C.legend(ax, handles=h, title="Gas", loc="lower left", ncol=2, columnspacing=0.8)
     fig.tight_layout()
     C.save(fig, "fig_discharge_time_bound", pd.concat([data, E.assign(quantity="eye_interval_ms")], ignore_index=True),
            "validation_upwards/figures_tip/fig_discharge_time_bound.py; counted = kept tip re-strikes (T_TIP); eye = "
@@ -59,7 +61,7 @@ def main():
            """# Mean discharge time: an upper bound
 
 Optical mean discharge time, defined as in the earlier suites (mean interval between successive re-strikes), shown as
-an UPPER BOUND. Filled: from the counted leading-tip re-strikes, per recording (open small markers) and mean ± sd over
+an UPPER BOUND. Gas markers: from the counted leading-tip re-strikes, per recording (small grey open markers) and mean ± sd over
 trials. Counted re-strikes are real (blind audit 79/80), but real ones are missed (the pipeline found 0.47–0.90 of the
 re-strikes seen by eye where the arc glides, 1 of 32 in the spot regime), and each miss merges two intervals, so the
 true mean is shorter. Stars: mean interval between the author's by-eye marks in single windows. Also an upper bound

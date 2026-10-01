@@ -23,7 +23,7 @@ from scipy.stats import mannwhitneyu
 import _common as C
 
 MIN_FRAMES = 200
-QTY = [("v_ms", "tip velocity, last/first third"), ("L_mm", "arc length, last/first third")]
+QTY = [("v_ms", "Velocity, Last/First Third"), ("L_mm", "Length, Last/First Third")]
 
 
 def main():
@@ -31,7 +31,7 @@ def main():
     D = pd.read_parquet(C.CACHE, columns=["run", "gas", "Re", "trial", "t_frac", "v_ms", "L_mm"])
     D["third"] = np.where(D["t_frac"] < 1 / 3, 0, np.where(D["t_frac"] > 2 / 3, 2, 1))
     D = D[D["third"] != 1]
-    fig, axs = plt.subplots(1, 2, figsize=(9.5, 3.3))
+    fig, axs = plt.subplots(2, 1, figsize=(C.SINGLE_W, 5.4), sharex=True)
     out, lines = [], []
     for ax, (col, lab) in zip(axs, QTY):
         g = D.dropna(subset=[col]).groupby(["run", "gas", "Re", "trial", "third"])[col]
@@ -57,14 +57,15 @@ def main():
                      f"median |ln| {np.median(within):.3f} within recordings vs {m:.3f} between repeats "
                      f"(reference only; Mann-Whitney p {p:.3g})")
         ax.axhspan(np.exp(-m), np.exp(m), color="0.9", lw=0)
-        ax.axhline(1, color="0.5", lw=0.8)
+        ax.axhline(1, color="0.4", lw=0.8, ls="--")
         out.append(C.vs_re_panel(ax, P.rename(columns={"run": "stem"}), "ratio", lab)
                    .assign(quantity=col, null_median_abs_ln=m, mwu_p=p))
         ax.set_ylim(0, 2)
     print("\n".join(lines))
     for ax, t in zip(axs, "ab"):
-        ax.text(0.03, 0.97, f"({t})", transform=ax.transAxes, va="top")
-    axs[0].legend(fontsize=7, frameon=False, loc="lower right")
+        C.panel(ax, t)
+    axs[0].set_xlabel("")
+    C.legend(axs[1], handles=C.gas_handles(), title="Gas", loc="lower center", ncol=3, columnspacing=0.8)
     fig.tight_layout()
     C.save(fig, "fig_stationarity", pd.concat(out, ignore_index=True),
            f"validation_upwards/figures_tip/fig_stationarity.py; thirds of the record; >= {MIN_FRAMES} frames per "
@@ -72,7 +73,7 @@ def main():
            f"""# Within-recording stationarity
 
 Median of the last third of each 325 ms recording divided by the median of its first third, for the local tip
-velocity (a) and the arc length (b); per recording (open) and mean ± sd over trials (filled). {' '.join(lines)}.
+velocity (a) and the arc length (b); per recording (small grey open markers) and mean ± sd over trials (coloured). {' '.join(lines)}.
 Individual recordings fluctuate between thirds; there is no systematic drift in either direction. Grey band, for
 scale only: the typical difference between two REPEAT recordings over the same third (exp(± median |ln ratio|)); it
 includes between-trial level differences, so it is not a matched null. A recording is used only if both thirds hold

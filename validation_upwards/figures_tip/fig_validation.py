@@ -31,32 +31,34 @@ def scales():
 
 def main():
     C.style()
-    fig, axs = plt.subplots(2, 2, figsize=(9.5, 7.0))
+    fig, axs = plt.subplots(2, 2, figsize=(C.DOUBLE_W, 6.2))
     (a, b), (c, d) = axs
     out = []
     # (a) scale
     S = scales()
     x = np.arange(len(S))
-    a.bar(x, S["px_per_mm"], yerr=S["sem"], color=[C.COLOR[g] for g in S["gas"]], capsize=3)
+    a.bar(x, S["px_per_mm"], yerr=S["sem"], color=[C.COLOR[g] for g in S["gas"]], edgecolor=C.EDGE, linewidth=0.8,
+          capsize=3, error_kw=dict(elinewidth=0.8, capthick=0.8))
     a.set_xticks(x, [s.replace("45degree_2.4mmGap", "").replace("(1_1)", "").replace("setup1_shifted_right_6px",
                                                                                         "set-up 1").replace("setup2", "set-up 2")
                      for s in S["setup"]], rotation=30, ha="right", fontsize=7)
-    a.set_ylabel("scale (px/mm)")
+    a.set_ylabel("Scale (px/mm)")
+    a.tick_params(axis="x", which="minor", bottom=False, top=False)
     a.set_ylim(0, 1.15 * S["px_per_mm"].max())
     for xi, n in zip(x, S["n"]):
-        a.text(xi, 0.3, f"n={n}", ha="center", fontsize=7, color="white")
+        a.text(xi, 0.3, f"n={n}", ha="center", fontsize=7, color="black")
     out.append(S.assign(panel="a"))
     # (b) threshold rule
     G = pd.read_csv(C.THR / "tip_threshold_curve.csv")
     t_tip = float((C.THR / "T_TIP.txt").read_text().strip())
     for gas in C.GASES:
         g = G[G["gas"] == gas]
-        b.plot(g["T_mm"], 100 * g["fdr"], "-", color=C.COLOR[gas], lw=1.2, label=C.LABEL[gas])
+        b.plot(g["T_mm"], 100 * g["fdr"], "-", color=C.COLOR[gas], label=C.LABEL[gas], **C.outlined(1.2))
     b.axhline(5, color="0.4", ls="--", lw=0.8)
     b.axvline(t_tip, color="0.4", ls=":", lw=0.8)
-    b.set_xlabel("single-step fall threshold T (mm)"), b.set_ylabel("false-detection estimate (%)")
+    b.set_xlabel("Single-Step Fall Threshold T (mm)"), b.set_ylabel("False-Detection Estimate (%)")
     b.set_xlim(0, 5), b.set_ylim(0, 40)
-    b.legend(fontsize=7, frameon=False)
+    C.legend(b, title="Gas", loc="upper right")
     out.append(G.assign(panel="b"))
     # (c) blind audit
     A = pd.read_csv(C.ROOT / "restrike_audit" / "graded.csv")
@@ -64,26 +66,30 @@ def main():
     for i, (k, lab) in enumerate(cls):
         dd = A[A["cls"] == k]
         r, n = int((dd["q1"] == "R").sum()), int((dd["q1"] == "N").sum())
-        c.bar(i, r, color="#009E73", label="real" if i == 0 else None)
-        c.bar(i, n, bottom=r, color="#D55E00", label="not real" if i == 0 else None)
+        c.bar(i, r, color=C.YLGNBU5[1], edgecolor=C.EDGE, linewidth=0.8, label="Real" if i == 0 else None)
+        c.bar(i, n, bottom=r, color=C.YLGNBU5[4], edgecolor=C.EDGE, linewidth=0.8, label="Not real" if i == 0 else None)
         c.text(i, r + n + 0.5, f"{r}/{r + n}", ha="center", fontsize=8)
         out.append(pd.DataFrame([{"panel": "c", "class": k, "R": r, "N": n}]))
     c.set_xticks(range(3), [x[1] for x in cls])
-    c.set_ylabel("events judged blind")
+    c.set_ylabel("Events Judged Blind")
+    c.tick_params(axis="x", which="minor", bottom=False, top=False)
     c.set_ylim(0, 45)
-    c.legend(fontsize=7, frameon=False, loc="upper right")
+    C.legend(c, loc="upper right")
     # (d) completeness windows (descriptive)
     W = pd.read_csv(C.ROOT / "restrike_windows" / "windows_graded.csv")
     W = W[(W["mode"] == "all") & (W["H"] > 0)].sort_values(["gas", "Re"])
     y = np.arange(len(W))
-    d.errorbar(W["C"], y, xerr=[W["C"] - W["C_lo"], W["C_hi"] - W["C"]], fmt="o", color="0.2", capsize=3)
+    d.errorbar(W["C"], y, xerr=[W["C"] - W["C_lo"], W["C_hi"] - W["C"]], fmt="none", ecolor=C.EDGE, elinewidth=0.8,
+               capsize=2.5, capthick=0.8)
     for yi, (_, r) in zip(y, W.iterrows()):
-        d.plot(r["C"], yi, "o", color=C.COLOR[r["gas"]])
+        d.plot(r["C"], yi, C.MARK[r["gas"]], ms=6, mfc=C.COLOR[r["gas"]], mec=C.EDGE, mew=0.8)
     d.set_yticks(y, [f"{C.LABEL[g]} Re{re}  ({h} seen)" for g, re, h in zip(W["gas"], W["Re"], W["H"])], fontsize=7)
-    d.set_xlim(0, 1), d.set_xlabel("fraction of eye-seen re-strikes counted")
+    d.set_xlim(0, 1), d.set_xlabel("Fraction of Eye-Seen Re-strikes Counted")
+    d.tick_params(axis="y", which="minor", left=False, right=False)
+    d.set_ylim(-0.6, len(W) - 0.4)
     out.append(W.assign(panel="d"))
     for ax, t in zip(axs.ravel(), "abcd"):
-        ax.text(-0.02, 1.04, f"({t})", transform=ax.transAxes, ha="right", fontweight="bold")
+        C.panel(ax, t)
     fig.tight_layout()
     C.save(fig, "fig_validation", pd.concat(out, ignore_index=True),
            f"validation_upwards/figures_tip/fig_validation.py; T_TIP {t_tip} mm; inputs runs_annotated metadata, "

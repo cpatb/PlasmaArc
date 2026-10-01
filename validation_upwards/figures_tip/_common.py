@@ -12,8 +12,11 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.patheffects as pe  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
+from matplotlib.offsetbox import AnchoredText  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
@@ -25,10 +28,22 @@ CACHE = ROOT / "figures_tip" / "frames_cache.parquet"                     # deri
 THR = ROOT / "tip_restrike_check" / "threshold"
 GASES = ["Argon", "Air", "Ar-Air(1_1)", "Ar-CO2(1_1)", "CO2"]          # fastest to slowest (REPORT.md finding 2)
 LABEL = {"Argon": "Ar", "Air": "Air", "Ar-Air(1_1)": "Ar–Air 1:1", "Ar-CO2(1_1)": "Ar–CO$_2$ 1:1", "CO2": "CO$_2$"}
-# Okabe-Ito (colourblind-safe categorical)
-COLOR = {"Argon": "#0072B2", "Air": "#E69F00", "Ar-Air(1_1)": "#009E73", "Ar-CO2(1_1)": "#CC79A7", "CO2": "#D55E00"}
+
+# --- House style of the last J-electrode paper (GAD PAPER 28JUL26), read off its published Origin PDFs
+# (Figure2/3/6/7_Origin.pdf, MainText_VelocityNephogram.pdf; fills extracted with PyMuPDF, 2026-10-01):
+# Arial; boxed axes with inward major+minor ticks on all four sides; bold "a)" panel labels inside the top-left;
+# black-framed square-cornered legends with a title; markers with black edges; black capped error bars; histogram
+# bars with black edges; a condition tag ("Re: 9717") in a framed box at the top right; Title Case axis labels;
+# the ColorBrewer YlGnBu nozzle colours below, pale = fast (high Re) and navy = slow (low Re); plasma velocity maps
+# on a black background. Gas is categorical, so each gas also keeps its own marker shape.
+YLGNBU5 = ["#FFFFCC", "#A1DAB4", "#41B6C4", "#2C7FB8", "#253494"]          # exact fills of Figure6_Origin.pdf
+COLOR = dict(zip(GASES, YLGNBU5))                                          # fastest gas palest, as Re in the paper
 MARK = {"Argon": "o", "Air": "s", "Ar-Air(1_1)": "^", "Ar-CO2(1_1)": "D", "CO2": "v"}
 RE_LABEL = "Re"
+RE_LIM = (2250, 8594)                                                      # colour range of the Re ramp
+EDGE = "black"
+MAP_BG = "#1E1E1E"                                                         # nephogram background
+SINGLE_W, DOUBLE_W = 3.35, 6.9                                             # column widths (in)
 
 
 def git_hash():
@@ -101,16 +116,59 @@ def vs_re_panel(ax, D, col, ylabel):
     rows = []
     for gas in GASES:
         d = D[D["gas"] == gas]
-        ax.plot(d["Re"], d[col], MARK[gas], ms=3, mfc="none", mec=COLOR[gas], mew=0.6, alpha=0.6, ls="none")
+        ax.plot(d["Re"], d[col], MARK[gas], ms=3, mfc="none", mec="0.55", mew=0.6, ls="none", zorder=2)
         c = by_condition(d, col)
-        ax.errorbar(c["Re"], c["mean"], yerr=c["sd"], fmt=MARK[gas] + "-", color=COLOR[gas], ms=4.5, lw=1.1,
-                    capsize=2, label=LABEL[gas])
+        ax.errorbar(c["Re"], c["mean"], yerr=c["sd"], label=LABEL[gas], **gas_err(gas))
         rows.append(c.assign(quantity=col))
     ax.set_xlabel(RE_LABEL)
     ax.set_ylabel(ylabel)
     ax.set_xlim(0, 9000)
     ax.set_ylim(bottom=0)
     return pd.concat(rows, ignore_index=True)
+
+
+def gas_err(gas, ms=5.5, hollow=False):
+    """errorbar kwargs in the paper's style: gas-coloured marker, black edge, black capped bars, no joining line."""
+    return dict(fmt=MARK[gas], ms=ms, mfc="white" if hollow else COLOR[gas], mec=EDGE, mew=0.8, ecolor=EDGE,
+                elinewidth=0.8, capsize=2.5, capthick=0.8, ls="none", zorder=3)
+
+
+def re_color(Re):
+    """The paper's Re ramp (YlGnBu, navy at low Re, pale yellow at high Re), continuous over RE_LIM."""
+    return plt.get_cmap("YlGnBu_r")((Re - RE_LIM[0]) / (RE_LIM[1] - RE_LIM[0]))
+
+
+def outlined(lw=1.4):
+    """Black stroke under a coloured line, so the pale end of YlGnBu stays visible on white (as the paper's black
+    marker and bar edges do)."""
+    return dict(lw=lw, path_effects=[pe.Stroke(linewidth=lw + 1.0, foreground=EDGE), pe.Normal()])
+
+
+def panel(ax, letter, x=0.025, y=0.97, color="black"):
+    """Bold 'a)' inside the top-left corner."""
+    ax.text(x, y, f"{letter})", transform=ax.transAxes, ha="left", va="top", fontweight="bold", color=color,
+            zorder=10)
+
+
+def tag(ax, text, loc="upper right"):
+    """Condition tag in a black-framed box (the paper's 'Re: 9717' box)."""
+    ax.add_artist(AnchoredText(text, loc=loc, frameon=True, borderpad=0.4, pad=0.25,
+                               prop=dict(size=plt.rcParams["legend.fontsize"])))
+    ax.artists[-1].patch.set(edgecolor=EDGE, linewidth=0.8, boxstyle="square,pad=0")
+
+
+def legend(ax, **kw):
+    kw.setdefault("loc", "best")
+    return ax.legend(**kw)
+
+
+def gas_handles(hollow_note=None):
+    """Legend handles: one per gas (filled marker, black edge)."""
+    h = [Line2D([0], [0], marker=MARK[g], ls="none", ms=5.5, mfc=COLOR[g], mec=EDGE, mew=0.8, label=LABEL[g])
+         for g in GASES]
+    if hollow_note:
+        h.append(Line2D([0], [0], marker="o", ls="none", ms=5.5, mfc="white", mec=EDGE, mew=0.8, label=hollow_note))
+    return h
 
 
 def save(fig, slug, data: pd.DataFrame, provenance: str, caption_md: str):
@@ -130,3 +188,20 @@ def save(fig, slug, data: pd.DataFrame, provenance: str, caption_md: str):
 
 def style():
     figstyle.apply()
+    plt.rcParams.update({
+        "font.family": "sans-serif", "font.sans-serif": ["Arial", "DejaVu Sans"],
+        "mathtext.fontset": "custom", "mathtext.rm": "Arial", "mathtext.it": "Arial:italic",
+        "mathtext.bf": "Arial:bold", "mathtext.sf": "Arial",
+        "font.size": 9, "axes.labelsize": 10, "xtick.labelsize": 9, "ytick.labelsize": 9,
+        "legend.fontsize": 8, "legend.title_fontsize": 8, "axes.titlesize": 9,
+        "axes.linewidth": 0.8, "axes.edgecolor": EDGE,
+        "axes.spines.top": True, "axes.spines.right": True,
+        "xtick.direction": "in", "ytick.direction": "in", "xtick.top": True, "ytick.right": True,
+        "xtick.minor.visible": True, "ytick.minor.visible": True,
+        "xtick.major.size": 3.5, "ytick.major.size": 3.5, "xtick.minor.size": 2.0, "ytick.minor.size": 2.0,
+        "xtick.major.width": 0.8, "ytick.major.width": 0.8, "xtick.minor.width": 0.6, "ytick.minor.width": 0.6,
+        "legend.frameon": True, "legend.fancybox": False, "legend.edgecolor": EDGE, "legend.framealpha": 1.0,
+        "legend.borderpad": 0.4, "legend.handletextpad": 0.3, "legend.labelspacing": 0.3,
+        "legend.handlelength": 1.2, "patch.linewidth": 0.8,
+        "lines.markeredgecolor": EDGE, "hatch.linewidth": 0.6,
+    })
