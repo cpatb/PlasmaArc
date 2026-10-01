@@ -1,5 +1,5 @@
-"""Distribution of the re-strike height (new tip height above the gap) of kept leading-tip re-strikes, per gas,
-with the Mode A/B valley. Log counts: the near-gap peak holds ~70 % of events.
+"""Distribution of the re-strike height (new tip height above the gap) of kept leading-tip re-strikes, per gas.
+No Mode A/B boundary is drawn (author, 2026-10-01: show the height only). Log counts: the near-gap peak holds ~70 % of events.
 
 usage: python fig_restrike_height.py
 """
@@ -21,8 +21,6 @@ def main():
     E = E[E["kept"]].copy()
     E["gas"] = E["run"].map(F["gas"])
     print(f"events: {n0}, kept {len(E)}")
-    val = float([ln for ln in (C.THR / "tip_modes.txt").read_text(encoding="utf-8").splitlines()
-                 if ln.startswith("valley value used")][0].split(":")[1].strip().split()[0])
     hmax = float(np.ceil(E["tip_after_mm"].max() / BIN_MM) * BIN_MM)
     bins = np.arange(0, hmax + BIN_MM / 2, BIN_MM)
     fig, axs = plt.subplots(len(C.GASES), 1, figsize=(C.SINGLE_W, 7.4), sharex=True)
@@ -30,7 +28,6 @@ def main():
     for ax, gas in zip(axs, C.GASES):
         h, _ = np.histogram(E.loc[E["gas"] == gas, "tip_after_mm"], bins)
         ax.bar(bins[:-1], h, width=BIN_MM, align="edge", color=C.COLOR[gas], edgecolor=C.EDGE, linewidth=0.5)
-        ax.axvline(val, color="0.3", lw=0.8, ls="--", zorder=4)
         ax.set_yscale("log")
         ax.set_ylim(0.8, 2e3)
         C.tag(ax, f"{C.LABEL[gas]}, N = {int(h.sum())}")
@@ -41,14 +38,13 @@ def main():
     axs[-1].set_xlim(0, hmax)
     fig.tight_layout()
     C.save(fig, "fig_restrike_height", pd.concat(rows, ignore_index=True),
-           f"validation_upwards/figures_tip/fig_restrike_height.py; bin {BIN_MM} mm; valley {val} mm; "
+           f"validation_upwards/figures_tip/fig_restrike_height.py; bin {BIN_MM} mm; "
            "input threshold/tip_restrike_events_kept.csv",
            f"""# Re-strike height distribution
 
 Height of the new leading tip above the minimum gap at each kept re-strike (fall ≥ T_TIP), all Re pooled, one panel
-per gas, log counts, {BIN_MM} mm bins. Dashed line: the Mode A/B boundary at {val} mm, the valley of the pooled
-distribution (valley_reclassify.find_valley). Near-gap re-strikes (Mode A) form one peak at 0.2–0.5 mm; Mode B
-re-strikes spread over 2–12 mm with almost nothing between 1 and 2 mm. CO₂ and Ar–CO₂ re-strike almost only at the
+per gas, log counts, {BIN_MM} mm bins. Re-strikes at the gap form one peak at 0.2–0.5 mm; re-strikes partway up the
+blades spread over 2–12 mm, with almost nothing between 1 and 2 mm. CO₂ and Ar–CO₂ re-strike almost only at the
 gap.""")
 
 
