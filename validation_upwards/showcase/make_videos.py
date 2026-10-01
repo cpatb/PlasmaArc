@@ -1,13 +1,15 @@
-"""Two 20-s showcase videos of one BLADE-upwards recording (showcase_common.STEM), same 12 ms of the record.
+"""Three 20-s showcase videos of one BLADE-upwards recording (showcase_common.STEM), same 12 ms of the record.
 Layout is the author's (2026-10-01): nothing on the frame but a scale bar (upper left) and the elapsed time (upper
 right); every run parameter goes to run_info.txt beside the videos.
 
   1. <stem>_raw.mp4      the camera frames (defect-corrected 12-bit DN, NOT background-subtracted), one fixed
                          grey map for the whole clip (no per-frame normalisation).
-  2. <stem>_measured.mp4 the frame the detector sees (background-subtracted, dimmed), the pipeline's cleaned arc
-                         mask (hysteresis -> closing -> largest component; analyze_blade.binarize), a red dot at
-                         the leading tip and green dots at the two attached feet; beside live traces of tip height
-                         and arc length with a cursor (velocity left out for now, author 2026-10-01).
+  2. <stem>_labeled.mp4  the frame the detector sees (background-subtracted, dimmed), the pipeline's cleaned arc
+                         mask (hysteresis -> closing -> largest component; analyze_blade.binarize), the hand-annotated electrode
+                         edges (yellow) and minimum gap (magenta), unlabelled, a red dot at
+                         the leading tip and green dots at the two attached feet.
+  3. <stem>_labeled_traces.mp4  video 2 side by side with live traces of tip height and arc length
+                         and a cursor (velocity left out for now, author 2026-10-01).
 
 Every frame is re-measured here with analyze_blade.measure_frame and the run's own parameters, and the result is
 CHECKED against the run's measurements_all_events.csv (= measurements.csv plus velocity columns) on every frame of the clip (detection, completeness, area, arc length,
@@ -38,7 +40,7 @@ GAMMA = 0.5                 # display only: DN/full-scale ** GAMMA, same for eve
 SCALE_MM = 2.0              # spatial scale bar length
 FONT = r"C:\Windows\Fonts\arial.ttf"
 FONT_B = r"C:\Windows\Fonts\arialbd.ttf"
-COL = dict(tip=(255, 40, 40), foot=(60, 255, 90), mask=(0, 200, 255), mask_bad=(255, 150, 0))
+COL = dict(edge=(255, 214, 0), gap=(255, 64, 255), tip=(255, 40, 40), foot=(60, 255, 90), mask=(0, 200, 255), mask_bad=(255, 150, 0))
 
 
 def _text(dr, *a, **k):
@@ -189,7 +191,8 @@ def main():
     t_tot = S.WIN / fps * 1e3
     panel, x_of, y_top, y_bot = trace_panel(d, s, E_win, fps, 1024, 1024)
     v1 = Encoder(S.OUT / f"{S.STEM}_raw.mp4", 1024, 1024)
-    v2 = Encoder(S.OUT / f"{S.STEM}_measured.mp4", 2048, 1024)
+    v2 = Encoder(S.OUT / f"{S.STEM}_labeled.mp4", 1024, 1024)
+    v3 = Encoder(S.OUT / f"{S.STEM}_labeled_traces.mp4", 2048, 1024)
     for i in range(0, S.WIN, S.STRIDE):
         f = s + i
         t_ms = i / fps * 1e3
@@ -205,6 +208,10 @@ def main():
             colr = np.array(COL["mask"] if complete else COL["mask_bad"], np.float32)
             img[msk] = 0.45 * img[msk] + 0.55 * colr
         img = img.astype(np.uint8)
+        # electrode edges (hand annotation, yellow) and the minimum gap (magenta), drawn but not labelled
+        for e in (edges[0], edges[1]):
+            cv2.line(img, P(e[0]), P(e[-1]), COL["edge"], 3, cv2.LINE_AA)
+        cv2.line(img, P(edges[2]), P(edges[3]), COL["gap"], 3, cv2.LINE_AA)
         if mm["_binary"].any():
             tip = ((m["H"] - 1) - float(d.at[f, "arc_tip_row"]), float(d.at[f, "arc_tip_col"]))  # CSV row is flipped
             if complete:
@@ -214,11 +221,14 @@ def main():
         right = panel.copy()
         xc = int(round(x_of(t_ms)))
         cv2.line(right, (xc, int(y_top)), (xc, int(y_bot)), (220, 30, 30), 2, cv2.LINE_AA)
-        v2.write(np.concatenate([corners(img, t_ms, pxmm), right], axis=1))
+        lab = corners(img, t_ms, pxmm)
+        v2.write(lab)
+        v3.write(np.concatenate([lab, right], axis=1))
         if i % 400 == 0:
             print(f"  frame {i}/{S.WIN}", flush=True)
     v1.close()
     v2.close()
+    v3.close()
     json.dump(dict(window_start=int(s), window_frames=S.WIN, stride=S.STRIDE, fps_out=S.FPS_OUT,
                    t0_ms=s / fps * 1e3, clip_ms=t_tot, slowdown=fps / (S.STRIDE * S.FPS_OUT), gamma=GAMMA,
                    remeasure_mismatches=len(bad), px_per_mm=pxmm, gap_px=gap_px,
@@ -233,7 +243,8 @@ Video          every {S.STRIDE}nd source frame at {S.FPS_OUT} fps = {S.WIN // S.
 Display        raw: defect-corrected DN, not background-subtracted, (DN/{cf.SAT_DN})^{GAMMA} grey, x{UP} nearest-neighbour
                measured: background-subtracted frame (55 % grey); cleaned arc mask cyan (complete arc) / orange
                (not attached to both edges, excluded); red dot = leading tip (filled when complete);
-               green dots = attachment feet; right: tip height above the gap and arc length, re-strike lines by mode
+               green dots = attachment feet; yellow = hand-annotated electrode edges;
+               magenta = minimum gap; *_labeled_traces.mp4 right: tip height above the gap and arc length, re-strike lines by mode
 Calibration    {pxmm:.4f} px/mm from the hand-annotated {cal['gap_mm']} mm gap ({gap_px:.2f} px); gap row {gap_row:.2f}
 Detector       hysteresis on background-subtracted DN: T_low {det['T_low']}, T_high {det['T_high']}, low_frac {m['low_frac']},
                closing radius {det['close_r']} px, speckle floor {det['min_arc_px']} px, edge tolerance {m['elec_tol_px']} px
