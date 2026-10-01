@@ -27,7 +27,7 @@ import pandas as pd
 import _common as C
 
 BIN_MM = 0.2
-X_RANGE, Y_RANGE = (-12.0, 12.0), (-3.0, 18.0)
+X_RANGE, Y_RANGE = (-12.0, 12.0), (-3.0, 26.0)   # the frame reaches ~25 mm above the gap; Argon fills it
 MIN_COUNT = 20
 PCT = 97
 
