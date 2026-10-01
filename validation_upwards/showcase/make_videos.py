@@ -1,13 +1,13 @@
-"""Two 20-s showcase videos of one BLADE-upwards recording (showcase_common.STEM), same 12 ms of the record:
+"""Two 20-s showcase videos of one BLADE-upwards recording (showcase_common.STEM), same 12 ms of the record.
+Layout is the author's (2026-10-01): nothing on the frame but a scale bar (upper left) and the elapsed time (upper
+right); every run parameter goes to run_info.txt beside the videos.
 
   1. <stem>_raw.mp4      the camera frames (defect-corrected 12-bit DN, NOT background-subtracted), one fixed
-                         grey map for the whole clip (no per-frame normalisation), a spatial scale bar and an
-                         elapsed-time bar.
-  2. <stem>_measured.mp4 the frame the detector sees (background-subtracted), the pipeline's cleaned arc mask
-                         (hysteresis -> closing -> largest component; analyze_blade.binarize), its skeleton, the
-                         leading tip, the two attached feet, the hand-annotated electrode edges, the minimum gap,
-                         the gap reference row, the tip height, arc length, local tip velocity and kept tip
-                         re-strikes, beside live traces of h, L and v with a cursor.
+                         grey map for the whole clip (no per-frame normalisation).
+  2. <stem>_measured.mp4 the frame the detector sees (background-subtracted, dimmed), the pipeline's cleaned arc
+                         mask (hysteresis -> closing -> largest component; analyze_blade.binarize), a red dot at
+                         the leading tip and green dots at the two attached feet; beside live traces of tip height
+                         and arc length with a cursor (velocity left out for now, author 2026-10-01).
 
 Every frame is re-measured here with analyze_blade.measure_frame and the run's own parameters, and the result is
 CHECKED against the run's measurements_all_events.csv (= measurements.csv plus velocity columns) on every frame of the clip (detection, completeness, area, arc length,
@@ -34,15 +34,11 @@ import _common as C  # noqa: E402
 
 FFMPEG = r"C:\Users\compl\ffmpeg\bin\ffmpeg.exe"
 UP = 4                      # 256 px -> 1024 px, nearest neighbour (pixels stay pixels)
-STRIP = 128                 # info strip under the image (time bar, labels)
 GAMMA = 0.5                 # display only: DN/full-scale ** GAMMA, same for every frame
 SCALE_MM = 2.0              # spatial scale bar length
-BANNER_FRAMES = 60          # a re-strike label stays up for 60 source frames (0.3 ms = 0.5 s of video)
 FONT = r"C:\Windows\Fonts\arial.ttf"
 FONT_B = r"C:\Windows\Fonts\arialbd.ttf"
-COL = dict(edge=(255, 214, 0), gap=(255, 64, 255), tip=(255, 40, 40), foot=(60, 255, 90),
-           mask=(0, 200, 255), mask_bad=(255, 150, 0), skel=(255, 255, 255), row=(170, 170, 170),
-           A=(0, 220, 255), B=(255, 120, 200))
+COL = dict(tip=(255, 40, 40), foot=(60, 255, 90), mask=(0, 200, 255), mask_bad=(255, 150, 0))
 
 
 def _text(dr, *a, **k):
@@ -67,45 +63,27 @@ def P(rc):
     return (int(round((rc[1] + 0.5) * UP)), int(round((rc[0] + 0.5) * UP)))
 
 
-def draw_strip(canvas, t_ms, t_tot, frame, label, x0=40):
-    """Elapsed-time bar: filled up to the current time, ticks every 1 ms, labelled every 2 ms."""
-    h0 = canvas.shape[0] - STRIP
-    canvas[h0:] = 0
+def corners(canvas, t_ms, pxmm):
+    """Author's layout (2026-10-01): scale bar upper LEFT, elapsed time upper RIGHT, nothing else on the frame."""
     im = Image.fromarray(canvas)
     dr = ImageDraw.Draw(im)
-    W = canvas.shape[1] if canvas.shape[1] <= 1024 else 1024
-    x1 = W - 40
-    yb = h0 + 62
-    dr.rectangle([x0, yb - 9, x1, yb + 9], outline=(200, 200, 200), width=2)
-    xf = x0 + (x1 - x0) * t_ms / t_tot
-    dr.rectangle([x0 + 2, yb - 7, max(x0 + 2, xf), yb + 7], fill=(255, 190, 40))
-    for k in range(int(np.floor(t_tot)) + 1):
-        xt = x0 + (x1 - x0) * k / t_tot
-        dr.line([xt, yb + 9, xt, yb + (19 if k % 2 == 0 else 14)], fill=(200, 200, 200), width=2)
-        if k % 2 == 0:
-            _text(dr, (xt, yb + 21), f"{k} ms", font=font(18), fill=(200, 200, 200), anchor="ma")
-    _text(dr, (x0, h0 + 14), f"elapsed  t = {t_ms:6.3f} ms", font=font(26, True), fill=(255, 255, 255))
-    _text(dr, (x1, h0 + 18), f"frame {frame}", font=font(20), fill=(170, 170, 170), anchor="ra")
-    _text(dr, (x0 + 330, h0 + 18), label, font=font(20), fill=(170, 170, 170))
-    canvas[:] = np.asarray(im)
-
-
-def scale_bar(dr, pxmm, x0=36, y0=1024 - 44):
     L = SCALE_MM * pxmm * UP
+    x0, y0 = 32, 52
     dr.rectangle([x0, y0, x0 + L, y0 + 8], fill=(255, 255, 255))
-    _text(dr, (x0 + L / 2, y0 - 6), f"{SCALE_MM:g} mm", font=font(22, True), fill=(255, 255, 255), anchor="md")
+    _text(dr, (x0 + L / 2, y0 - 6), f"{SCALE_MM:g} mm", font=font(24, True), fill=(255, 255, 255), anchor="md")
+    _text(dr, (canvas.shape[1] - 24, 22), f"{t_ms:.3f} ms", font=font(30, True), fill=(255, 255, 255), anchor="ra")
+    return np.asarray(im)
 
 
 def trace_panel(d, s, E_win, fps, width, height):
     """Pre-rendered live-trace panel (house style) and the pixel mapping of its time axis."""
     C.style()
     dpi = 128
-    fig, axs = plt.subplots(3, 1, figsize=(width / dpi, height / dpi), dpi=dpi, sharex=True)
+    fig, axs = plt.subplots(2, 1, figsize=(width / dpi, height / dpi), dpi=dpi, sharex=True)
     w = d.iloc[s:s + S.WIN]
     t = w["t_ms"].to_numpy() - w["t_ms"].iloc[0]
-    for ax, col, lab in zip(axs, ["h_mm", "L_mm", "v_ms"],
-                            ["Tip Height (mm)", "Arc Length (mm)", "Local Tip Velocity (m/s)"]):
-        ax.plot(t, w[col], ".", ms=1.8, color="#2C7FB8", mec="none", rasterized=True)
+    for ax, col, lab in zip(axs, ["h_mm", "L_mm"], ["Tip Height (mm)", "Arc Length (mm)"]):
+        ax.plot(t, w[col], ".", ms=2.2, color="#2C7FB8", mec="none", rasterized=True)
         ax.set_ylabel(lab)
         ax.set_ylim(0, 1.08 * np.nanmax(w[col]))
         for _, e in E_win.iterrows():
@@ -113,7 +91,7 @@ def trace_panel(d, s, E_win, fps, width, height):
                        ls="--" if e["mode"] == "A" else "-", lw=0.9, zorder=0)
     axs[-1].set_xlabel("Elapsed Time (ms)")
     axs[-1].set_xlim(0, S.WIN / fps * 1e3)
-    for ax, k in zip(axs, "abc"):
+    for ax, k in zip(axs, "ab"):
         C.panel(ax, k)
     from matplotlib.lines import Line2D
     axs[0].legend(handles=[Line2D([0], [0], color="#253494", ls="--", lw=0.9, label="Mode A (gap)"),
@@ -209,118 +187,34 @@ def main():
     E_win.to_csv(S.OUT / "clip_restrikes.csv", index=False, float_format="%.6g")
 
     t_tot = S.WIN / fps * 1e3
-    lab = f"Argon, Re 8594, trial 1 · {fps / 1e3:.0f} kfps · {fps / (S.STRIDE * S.FPS_OUT):.0f}x slower"
-    panel, x_of, y_top, y_bot = trace_panel(d, s, E_win, fps, 1024, 1024 + STRIP)
-    v1 = Encoder(S.OUT / f"{S.STEM}_raw.mp4", 1024, 1024 + STRIP)
-    v2 = Encoder(S.OUT / f"{S.STEM}_measured.mp4", 2048, 1024 + STRIP)
-    A, B = edges[0], edges[1]
-    banner = None
+    panel, x_of, y_top, y_bot = trace_panel(d, s, E_win, fps, 1024, 1024)
+    v1 = Encoder(S.OUT / f"{S.STEM}_raw.mp4", 1024, 1024)
+    v2 = Encoder(S.OUT / f"{S.STEM}_measured.mp4", 2048, 1024)
     for i in range(0, S.WIN, S.STRIDE):
         f = s + i
         t_ms = i / fps * 1e3
-        # restrike banner: an event in the source frames covered since the last output frame
-        ev = E_win[(E_win["frame"] > f - S.STRIDE) & (E_win["frame"] <= f)]
-        if len(ev):
-            banner = (ev.iloc[-1], f)
-        if banner is not None and f - banner[1] > BANNER_FRAMES:
-            banner = None
+        # ---------- video 1: camera frame, scale bar, elapsed time ----------
+        v1.write(corners(np.repeat(up(gray8(raw[i]))[..., None], 3, 2), t_ms, pxmm))
 
-        # ---------- video 1 ----------
-        c1 = np.zeros((1024 + STRIP, 1024, 3), np.uint8)
-        c1[:1024] = up(gray8(raw[i]))[..., None]
-        im = Image.fromarray(c1)
-        dr = ImageDraw.Draw(im)
-        scale_bar(dr, pxmm)
-        c1 = np.asarray(im).copy()
-        draw_strip(c1, t_ms, t_tot, f, lab)
-        v1.write(c1)
-
-        # ---------- video 2 ----------
+        # ---------- video 2: the cleaned arc mask, leading tip (red), attached feet (green) ----------
         mm = M[i]
-        r = d.iloc[f]
         img = (up(gray8(sub[i])).astype(np.float32) * 0.55)[..., None].repeat(3, 2)
         msk = up(mm["_binary"].astype(np.uint8)) > 0
+        complete = bool(mm["arc_complete"])
         if msk.any():
-            colr = np.array(COL["mask"] if mm["arc_complete"] else COL["mask_bad"], np.float32)
+            colr = np.array(COL["mask"] if complete else COL["mask_bad"], np.float32)
             img[msk] = 0.45 * img[msk] + 0.55 * colr
         img = img.astype(np.uint8)
-        sk = mm.get("_skel_coords")
-        skm = np.zeros((256, 256), bool)
-        if sk is not None and len(sk) and mm["_binary"].any():
-            # the full skeleton (every branch: the arc length is skel.sum()), redrawn from the mask
-            from skimage.morphology import skeletonize
-            skm = skeletonize(mm["_binary"])
-        ys, xs = np.nonzero(skm)
-        for y, x in zip(ys, xs):
-            cv2.rectangle(img, (x * UP + 1, y * UP + 1), (x * UP + UP - 2, y * UP + UP - 2), COL["skel"], -1)
-        cv2.polylines(img, [np.array([P(p) for p in A[[0, -1]]])], False, COL["edge"], 3, cv2.LINE_AA)
-        cv2.polylines(img, [np.array([P(p) for p in B[[0, -1]]])], False, COL["edge"], 3, cv2.LINE_AA)
-        yg = int(round((gap_row + 0.5) * UP))
-        for x in range(0, 1024, 24):
-            cv2.line(img, (x, yg), (x + 12, yg), COL["row"], 1, cv2.LINE_AA)
-        cv2.line(img, P(edges[2]), P(edges[3]), COL["gap"], 3, cv2.LINE_AA)
-        for e in (edges[2], edges[3]):
-            cv2.circle(img, P(e), 6, COL["gap"], -1, cv2.LINE_AA)
-        complete = bool(mm["arc_complete"])
-        tip = None
         if mm["_binary"].any():
-            tip = (float(d.at[f, "arc_tip_row"]), float(d.at[f, "arc_tip_col"]))
-            tip = ((m["H"] - 1) - tip[0], tip[1])                  # CSV row is flipped (distance from electrodes)
-        if complete:
-            for ft in (mm["tip_a"], mm["tip_b"]):
-                cv2.circle(img, P(ft), 9, COL["foot"], 3, cv2.LINE_AA)
-            xt, yt = P(tip)
-            cv2.arrowedLine(img, (xt, yg), (xt, yt + 10), COL["tip"], 2, cv2.LINE_AA, tipLength=0.04)
-        if tip is not None:
+            tip = ((m["H"] - 1) - float(d.at[f, "arc_tip_row"]), float(d.at[f, "arc_tip_col"]))  # CSV row is flipped
+            if complete:
+                for ft in (mm["tip_a"], mm["tip_b"]):
+                    cv2.circle(img, P(ft), 9, COL["foot"], -1, cv2.LINE_AA)
             cv2.circle(img, P(tip), 10, COL["tip"], -1 if complete else 2, cv2.LINE_AA)
-        if banner is not None and tip is not None:
-            cv2.circle(img, P(tip), 26,
-                       COL[banner[0]["mode"]], 4, cv2.LINE_AA)
-
-        im = Image.fromarray(img)
-        dr = ImageDraw.Draw(im)
-        scale_bar(dr, pxmm)
-        ga, gb = P(edges[2]), P(edges[3])
-        _text(dr, (min(ga[0], gb[0]) - 24, max(ga[1], gb[1]) + 14), f"min gap {gap_px / pxmm:.2f} mm",
-                font=font(22, True), fill=COL["gap"], anchor="ra")
-        _text(dr, (8, yg - 6), "gap row (h = 0)", font=font(18), fill=COL["row"], anchor="ld")
-        pa = P(A[len(A) // 2])
-        pb = P(B[len(B) // 2])
-        _text(dr, (pa[0] - 10, pa[1] + 10), "electrode A edge", font=font(20, True), fill=COL["edge"], anchor="ra")
-        _text(dr, (pb[0] + 10, pb[1] + 10), "electrode B edge", font=font(20, True), fill=COL["edge"], anchor="la")
-        if complete:
-            xt, yt = P(tip)
-            _text(dr, (xt + 16, (yg + yt) / 2), f"h = {r['h_mm']:.2f} mm", font=font(22, True), fill=COL["tip"],
-                    anchor="lm")
-            _text(dr, (xt + 34, yt - 10), "leading tip", font=font(20), fill=COL["tip"], anchor="ld")
-        status = ("COMPLETE ARC (both feet attached)" if complete else
-                  "arc not attached to both edges: excluded" if mm["_binary"].any() else "no arc above threshold")
-        vtxt = "—" if np.isnan(r["v_ms"]) else f"{r['v_ms']:.2f} m/s"
-        lines = [(status, (255, 255, 255) if complete else COL["mask_bad"]),
-                 (f"tip height  h = {r['h_mm']:.2f} mm" if complete else "tip height  —", COL["tip"]),
-                 (f"arc length  L = {r['L_mm']:.2f} mm" if complete else "arc length  —", COL["skel"]),
-                 (f"local tip velocity  v = {vtxt}" if complete else "local tip velocity  —", (120, 220, 255)),
-                 (f"mask area {mm['area_px']} px²", (170, 170, 170))]
-        y = 14
-        for txt, cl in lines:
-            _text(dr, (14, y), txt, font=font(24, True) if y == 14 else font(23), fill=cl)
-            y += 32
-        if banner is not None:
-            e = banner[0]
-            nm = "Mode A (re-strike at the gap)" if e["mode"] == "A" else "Mode B (re-strike up the blades)"
-            _text(dr, (1010, 1024 - 84), f"TIP RE-STRIKE · {nm}", font=font(24, True), fill=COL[e["mode"]], anchor="ra")
-            _text(dr, (1010, 1024 - 52), f"tip fell {e['fall_mm']:.2f} mm, new tip at {e['tip_after_mm']:.2f} mm",
-                    font=font(21), fill=COL[e["mode"]], anchor="ra")
-        _text(dr, (1010, 92), "cyan: cleaned arc mask (orange: not attached)\nwhite: skeleton   green: attached feet\n"
-                "red: leading tip   yellow: hand-annotated edges", font=font(18), fill=(200, 200, 200), anchor="ra",
-                align="right")
-        left = np.zeros((1024 + STRIP, 1024, 3), np.uint8)
-        left[:1024] = np.asarray(im)
-        draw_strip(left, t_ms, t_tot, f, lab)
         right = panel.copy()
         xc = int(round(x_of(t_ms)))
         cv2.line(right, (xc, int(y_top)), (xc, int(y_bot)), (220, 30, 30), 2, cv2.LINE_AA)
-        v2.write(np.concatenate([left, right], axis=1))
+        v2.write(np.concatenate([corners(img, t_ms, pxmm), right], axis=1))
         if i % 400 == 0:
             print(f"  frame {i}/{S.WIN}", flush=True)
     v1.close()
@@ -330,6 +224,23 @@ def main():
                    remeasure_mismatches=len(bad), px_per_mm=pxmm, gap_px=gap_px,
                    restrikes_A=int((E_win["mode"] == "A").sum()), restrikes_B=int((E_win["mode"] == "B").sum())),
               open(S.OUT / "clip_info.json", "w"), indent=1)
+    (S.OUT / "run_info.txt").write_text(f"""Recording      {S.CINE}
+Gas / Re / trial  {m['gas']} / {m['Re']} / {m['trial']}   ({m['angle_deg']} deg blades, {m['gap_mm_folder']} mm gap)
+Camera         {fps:.0f} fps, exposure {m['shutter_ns']} ns, {m['W']}x{m['H']} px, {m['real_bpp']}-bit, {m['n_frames']} frames ({m['n_frames'] / fps * 1e3:.1f} ms)
+Clip           source frames {s}-{s + S.WIN - 1} (t = {s / fps * 1e3:.3f}-{(s + S.WIN) / fps * 1e3:.3f} ms of the record), {t_tot:.1f} ms
+Video          every {S.STRIDE}nd source frame at {S.FPS_OUT} fps = {S.WIN // S.STRIDE / S.FPS_OUT:.1f} s, {fps / (S.STRIDE * S.FPS_OUT):.0f}x slower than real time
+               elapsed time (upper right) is real time since the clip start; scale bar (upper left) {SCALE_MM:g} mm
+Display        raw: defect-corrected DN, not background-subtracted, (DN/{cf.SAT_DN})^{GAMMA} grey, x{UP} nearest-neighbour
+               measured: background-subtracted frame (55 % grey); cleaned arc mask cyan (complete arc) / orange
+               (not attached to both edges, excluded); red dot = leading tip (filled when complete);
+               green dots = attachment feet; right: tip height above the gap and arc length, re-strike lines by mode
+Calibration    {pxmm:.4f} px/mm from the hand-annotated {cal['gap_mm']} mm gap ({gap_px:.2f} px); gap row {gap_row:.2f}
+Detector       hysteresis on background-subtracted DN: T_low {det['T_low']}, T_high {det['T_high']}, low_frac {m['low_frac']},
+               closing radius {det['close_r']} px, speckle floor {det['min_arc_px']} px, edge tolerance {m['elec_tol_px']} px
+Check          all {S.WIN} clip frames re-measured with analyze_blade.measure_frame: {len(bad)} mismatches with the run CSV
+Re-strikes     kept (fall >= {S.t_tip_mm()} mm) in the clip: Mode A {int((E_win['mode'] == 'A').sum())}, Mode B {int((E_win['mode'] == 'B').sum())} (valley {S.mode_valley_mm()} mm)
+Run outputs    {S.RUN}
+""", encoding="utf-8")
     print(f"wrote {S.OUT}")
 
 
