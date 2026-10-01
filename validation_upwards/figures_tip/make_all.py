@@ -8,7 +8,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SCRIPTS = ["build_frames_cache.py", "fig_tip_kinematics.py", "fig_velocity_distributions.py",
-           "fig_velocity_vs_height.py", "fig_flow_scaling.py", "fig_regime.py", "fig_restrike_height.py",
+           "fig_velocity_vs_height.py", "fig_flow_scaling.py", "fig_regime.py", "fig_restrike_height.py", "fig_restrike_height_by_re.py",
            "fig_restrike_height_vs_re.py", "fig_stationarity.py", "fig_discharge_time_bound.py", "fig_velocity_maps.py", "fig_validation.py"]
 
 if __name__ == "__main__":
