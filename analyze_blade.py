@@ -355,6 +355,19 @@ def arc_front_tip(binary, direction='down'):
     idx  = r.argmax() if direction == 'down' else r.argmin()
     return float(r[idx]), float(c[idx])
 
+def arc_front_row_extent(binary, direction='down'):
+    """
+    Column extent of the lit pixels in the front row (the row arc_front_tip returns).
+    arc_front_tip takes the FIRST pixel of that row in raster order, i.e. the LEFTMOST,
+    and the front row holds more than one lit pixel on most frames, so its column is
+    biased left. Returns (leftmost col, rightmost col, mean col of the row's lit pixels).
+    """
+    if not binary.any(): return np.nan, np.nan, np.nan
+    r, c = np.where(binary)
+    row = r.max() if direction == 'down' else r.min()
+    cc = c[r == row]
+    return float(cc.min()), float(cc.max()), float(cc.mean())
+
 def fwhm_perpendicular(gray_n, coords, sample_step=10, half_width=20):
     H, W = gray_n.shape; n = len(coords)
     if n < 3: return np.nan
@@ -665,6 +678,7 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
              integrated_intensity=np.nan,
              centroid_row=np.nan, centroid_col=np.nan,
              arc_tip_row=np.nan, arc_tip_col=np.nan,
+             arc_tip_col_left=np.nan, arc_tip_col_right=np.nan, arc_tip_col_mean=np.nan,
              tip_a=None, tip_b=None,
              electrode_gap_px=np.nan, electrode_gap_mm=np.nan,
              curvature_mean=np.nan, bbox=None,
@@ -722,6 +736,8 @@ def measure_frame(raw, close_r, px_per_mm, top_fraction,
     if arc_direction == 'up' and not np.isnan(float(_tip_r)):
         _tip_r = float(H - 1 - _tip_r)
     m['arc_tip_row'], m['arc_tip_col'] = _tip_r, _tip_c
+    (m['arc_tip_col_left'], m['arc_tip_col_right'],
+     m['arc_tip_col_mean']) = arc_front_row_extent(binary, arc_direction)
 
     # skeletonize on the mask's bounding box (+2 px of zeros), pasted back: speed only, byte-identical skeleton
     _sub, _r0, _c0 = _bbox_crop(binary, 2)
@@ -907,7 +923,8 @@ CSV_FIELDS = ['file','frame','time_s','arc_detected','arc_complete','is_flash','
     'path_len_px','tortuosity','total_curvature_rad',
     'arclen_a_px','arclen_b_px','arclen_asym',
     'tort_a','tort_b','tort_asym','mid_cross_row','mid_cross_col',
-    'bbox_r0','bbox_c0','bbox_r1','bbox_c1']
+    'bbox_r0','bbox_c0','bbox_r1','bbox_c1',
+    'arc_tip_col_left','arc_tip_col_right','arc_tip_col_mean']
 
 def _f(v):
     if v is None: return ''
@@ -1194,7 +1211,10 @@ def main():
                     'tort_asym':_f(m['tort_asym']),
                     'mid_cross_row':_f(m['mid_cross_row']),'mid_cross_col':_f(m['mid_cross_col']),
                     'bbox_r0':bb[0] if bb else '','bbox_c0':bb[1] if bb else '',
-                    'bbox_r1':bb[2] if bb else '','bbox_c1':bb[3] if bb else ''})
+                    'bbox_r1':bb[2] if bb else '','bbox_c1':bb[3] if bb else '',
+                    'arc_tip_col_left':_f(m['arc_tip_col_left']),
+                    'arc_tip_col_right':_f(m['arc_tip_col_right']),
+                    'arc_tip_col_mean':_f(m['arc_tip_col_mean'])})
         print("CSV: %s" % csv_path)
 
         # ── save QA frames ────────────────────────────────────────────

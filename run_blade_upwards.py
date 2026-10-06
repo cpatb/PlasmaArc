@@ -90,8 +90,11 @@ def parse_condition(p: Path):
                 gap_mm_folder=float(gap.group(1)) if gap else None)
 
 
+RUNS_NAME_OVERRIDE = None   # --runs-name: write a re-run beside, not over, an existing runs folder
+
+
 def out_dir_for(p: Path, tag: str = "", annotated: bool = False) -> Path:
-    runs = "runs_annotated" if annotated else "runs"
+    runs = RUNS_NAME_OVERRIDE or ("runs_annotated" if annotated else "runs")
     base = OUT_ROOT / (runs if not tag else f"sens_{'annot_' if annotated else ''}{tag}") / p.relative_to(DATA_ROOT).parent
     return base / p.stem
 
@@ -512,6 +515,8 @@ def process(p: Path, workers: int, force=False, low_scale=1.0, high_scale=1.0, t
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--runs-name", default=None,
+                    help="output folder under OUT_ROOT instead of runs / runs_annotated")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--match", default=None, help="substring of the cine stem")
     ap.add_argument("--list-file", default=None, help="text file of cine paths")
@@ -531,6 +536,9 @@ def main():
     ap.add_argument("--check-annotations", action="store_true",
                     help="list every recording's hand annotation (px/mm, gap line vs edges, problems); run nothing")
     a = ap.parse_args()
+    if a.runs_name:
+        global RUNS_NAME_OVERRIDE
+        RUNS_NAME_OVERRIDE = a.runs_name
     # trial-major, then Re, then gas: every condition's trial 1 before any trial 2, and the gases
     # interleaved, so a partial batch covers every gas early
     files = sorted(DATA_ROOT.rglob("*.cine"),
