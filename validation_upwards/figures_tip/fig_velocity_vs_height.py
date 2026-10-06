@@ -1,7 +1,7 @@
 """Local tip velocity against tip height above the gap: one column per gas, one line per Re.
 
 Top row: median over MOVING frames (|v| > C.ZERO_EPS). Bottom row: the share of STALLED frames (v exactly 0: the
-whole-pixel tip did not move over the 5-frame fit). They are separated because the stalled share changes with
+whole-pixel tip did not move over the ±5-point fit). They are separated because the stalled share changes with
 height, and folding it into one median manufactured a trend (code review 2026-09-30: Argon Re2250's apparent
 0.69 -> 1.34 m/s rise came from the zero share falling 0.45 -> 0.08 with height; without zeros it rises at most ~12 %).
 
@@ -87,7 +87,7 @@ def main():
 
 Left column: median local tip velocity over moving frames against the leading tip's height above the minimum gap, one row
 per gas, one line per Re (navy low Re → pale yellow high Re) (every other Re step). Right column: the share of stalled frames (the whole-pixel tip did not move
-over the 5-frame fit), which is shown separately because it changes with height and would otherwise create a trend
+over the ±5-point fit), which is shown separately because it changes with height and would otherwise create a trend
 in a median. Lines: mean over trials of each trial's statistic in 1 mm bins; bands: min–max over trials. A bin is
 drawn only where every trial has ≥ {MIN_FRAMES} velocity frames. Velocities exist only on advancing-front frames and
 none are near the gap, so the lowest drawn bin is where sampling starts, not the gap; this is the velocity observed

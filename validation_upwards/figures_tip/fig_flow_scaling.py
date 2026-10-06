@@ -54,7 +54,7 @@ def main():
     rows, fits = [], []
     for gas in [g for g in C.GASES if g in PURE]:
         c = V[V["gas"] == gas].sort_values("Re")
-        # the tip velocity depends on the estimator where the 5-frame velocity is quantised (C.velocity_estimators):
+        # the tip velocity depends on the estimator where the ±5-point local velocity is quantised (C.velocity_estimators):
         # points = mean of the four estimators, bars = their range; a slope is fitted to EACH estimator and the range
         # of slopes is reported, so no estimator is chosen after the fact
         if gas in NO_FIT:
@@ -97,7 +97,7 @@ def main():
            f"""# Tip velocity against nozzle exit velocity
 
 (a) Tip velocity against the nozzle exit velocity U = Re ν / d (d = 0.6 mm, ν from CoolProp at 293 K, 1 atm),
-log–log. Points: mean of four velocity estimators; bars: their range (the 5-frame velocity is quantised, so at low
+log–log. Points: mean of four velocity estimators; bars: their range (the ±5-point local velocity is quantised, so at low
 speed the estimator matters; see fig_tip_kinematics). A power-law slope is fitted to each estimator separately and
 the range is given. (b) The ratio v / U. Filled: Re as labelled. Open (Air only, not fitted): Re multiplied by
 μ_Ar/μ_Air = {note:.3f}, the correction the Air folder's INFORMATION.txt says may apply. Assumptions, unverified: the

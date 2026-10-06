@@ -1,7 +1,7 @@
 """Leading-tip kinematics vs Re, per gas: (a) tip velocity, (b) arc length, (c) p90 tip height above the gap.
 
 (a) Tip velocity is drawn as the RANGE over four estimators per condition (C.velocity_estimators: frame median,
-median of moving frames, frame mean, the per-event-median headline), because the 5-frame local velocity is quantised
+median of moving frames, frame mean, the per-event-median headline), because the local velocity (OLS over the frame and ±5 advancing-front points) is quantised
 by the integer tip row and at low Re the estimators disagree by up to x3 (code review 2026-09-30). Bar = range;
 marker = the mean of the four; a marker is hollow where the range exceeds EST_WIDE of the mean.
 (b, c) Per-run values from aggregate_annotated/per_recording.csv; grey open markers single trials, coloured mean +/- sd.
@@ -50,7 +50,7 @@ def main():
            f"{C.EST_WIDE}; inputs aggregate_annotated/per_recording.csv, frames_cache.parquet",
            f"""# Leading-tip kinematics vs Re
 
-(a) Tip velocity. The 5-frame local velocity is quantised by the whole-pixel tip position (~0.1 mm), so a slow tip
+(a) Tip velocity. The local velocity (OLS over the frame and ±5 advancing-front points) is quantised by the whole-pixel tip position (~0.1 mm), so a slow tip
 reads exactly 0 on many frames and the answer depends on the estimator. The bar is the range over four estimators
 (median of all velocity frames, median of moving frames, mean, and the per-event median used before); the marker is
 their mean. Hollow markers: the estimators disagree by more than {100 * C.EST_WIDE:.0f} % of their mean ({wide_list}).

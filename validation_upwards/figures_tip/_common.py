@@ -78,14 +78,14 @@ def per_run():
     return D
 
 
-ZERO_EPS = 1e-9     # event_velocity writes a stalled tip's 5-frame OLS slope as +/-1e-13: a zero, not a velocity
+ZERO_EPS = 1e-9     # event_velocity writes a stalled tip's local (±5-point) OLS slope as +/-1e-13: a zero, not a velocity
 EST_WIDE = 0.20     # display convention only: an estimator range wider than this fraction of its mean is drawn hollow
 
 
 def velocity_estimators():
     """Per (gas, Re): the tip velocity by four estimators, and their range.
 
-    The 5-frame local velocity is quantised by the integer tip row (~0.106 mm): a slow tip reads exactly 0 on most
+    The local velocity (OLS over the frame and ±5 advancing-front points) is quantised by the integer tip row (~0.106 mm): a slow tip reads exactly 0 on most
     frames and one-pixel values on the rest (code review 2026-09-30). Its median is then a biased estimator, and which
     estimator is used matters. Reported side by side, no selection:
       med     median over all velocity frames (zeros included)

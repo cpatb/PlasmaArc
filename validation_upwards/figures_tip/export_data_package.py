@@ -189,7 +189,7 @@ FILES
 
 DEFINITIONS
   Leading tip: the highest point of the arc (furthest from the gap along the blades).
-  Tip velocity: 5-frame local velocity of the leading tip along the blades, on frames where the tip advances.
+  Tip velocity: local velocity (OLS over the frame and ±5 advancing-front points) of the leading tip along the blades, on frames where the tip advances.
     It is QUANTISED by whole-pixel tip positions (~0.1 mm), so a slow tip reads exactly 0 on many frames
     (stalled_frame_share) and the answer depends on the estimator. Four estimators are given:
       median over all velocity frames; median over moving frames; mean over all frames; median of event medians.

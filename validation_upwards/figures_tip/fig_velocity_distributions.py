@@ -67,7 +67,7 @@ def main():
 Per-frame local tip velocity (axial, advancing-front frames only), one panel per gas, one line per Re (colour, navy at low Re →
 pale yellow at high Re, as in the J-electrode paper), trials pooled, {BIN} m/s bins, each normalised by all of its velocity frames (frames beyond the axis are left out of the area, not rescaled in). Conditions with fewer than {MIN_FRAMES}
 velocity frames are not drawn. The first bin is centred on 0 and holds the frames where the whole-pixel tip did not
-move over the 5-frame fit (a stalled or slow tip); its share is in data/fig_velocity_distributions.csv (up to ~0.5 at
+move over the ±5-point fit (a stalled or slow tip); its share is in data/fig_velocity_distributions.csv (up to ~0.5 at
 the lowest Re of the CO₂ gases). The y axis stops at {YMAX} s/m; only the zero bin exceeds it, in: {off_txt}. The velocity is quantised, so
 the fine structure of each curve is not physical.""")
 

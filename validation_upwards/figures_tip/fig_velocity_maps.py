@@ -9,7 +9,7 @@ pixel (velocity_map_count.npy). This script:
 - bins pixels onto a common BIN_MM grid by scatter-adding sum(v * count) and sum(count) (exact count weighting, no
   interpolation), over all trials of the condition;
 - masks bins with fewer than MIN_COUNT frames (the rim where the arc rarely reached).
-The MEAN is what the quantised 5-frame velocity needs (it includes stalled frames as 0). The velocity at a pixel is
+The MEAN is what the quantised ±5-point local velocity needs (it includes stalled frames as 0). The velocity at a pixel is
 the TIP velocity of the frames in which the arc covered it, not a local speed of that piece of arc (the J-suite
 definition).
 
@@ -124,7 +124,7 @@ Mean leading-tip velocity over the frames in which the arc covered each point, o
 trials pooled (weighted by frame count) on a common {BIN_MM} mm grid centred on each recording's own hand-annotated
 gap (dotted line: the gap height). The value at a point is the TIP velocity of the frames in which the arc covered it
 (the J-suite definition), not the local speed of that piece of arc. The mean includes stalled frames as zero, which is
-what the pixel-quantised 5-frame velocity needs. Dark background: fewer than {MIN_COUNT} frames. **Colour scale per row** (0 to
+what the pixel-quantised ±5-point local velocity needs. Dark background: fewer than {MIN_COUNT} frames. **Colour scale per row** (0 to
 the row's 97th percentile, colour bar on the right): compare Re within a gas by colour; compare gases by the colour-bar
 numbers, not by colour. At the lowest Re of the CO₂ gases the underlying velocities are not resolved (fig_tip_kinematics).""")
 
