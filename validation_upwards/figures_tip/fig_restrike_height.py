@@ -1,5 +1,5 @@
 """Distribution of the re-strike height (new tip height above the gap) of kept leading-tip re-strikes, per gas.
-No Mode A/B boundary is drawn (author, 2026-10-01: show the height only). Log counts: the near-gap peak holds ~70 % of events.
+No Mode A/B boundary is drawn (author, 2026-10-01: show the height only). No panel letters (author, 2026-10-28). Log counts: the near-gap peak holds ~70 % of events.
 
 usage: python fig_restrike_height.py
 """
@@ -31,7 +31,6 @@ def main():
         ax.set_yscale("log")
         ax.set_ylim(0.8, 2e3)
         C.tag(ax, f"{C.LABEL[gas]}, N = {int(h.sum())}")
-        C.panel(ax, "abcde"[len(rows)])
         rows.append(pd.DataFrame({"gas": gas, "bin_lo_mm": bins[:-1], "bin_hi_mm": bins[1:], "count": h}))
     axs[-1].set_xlabel("Re-strike Height Above Gap (mm)")
     axs[len(axs) // 2].set_ylabel("Count")
