@@ -37,6 +37,7 @@ What the numbers are (carried into every output):
 usage: python mode_split.py <analysis_root> <out_dir>
 """
 import itertools
+import json
 import sys
 from pathlib import Path
 
@@ -66,8 +67,9 @@ def valley(h, px_mm, h_distinct=None):
     out = dict(valley_mm=np.nan, ratio=np.nan, n_low=0, n_high=0, n_peaks=0, ok=False)
     if len(hd) < 2 * MIN_SIDE:
         return out
-    assert h.min() >= 0.0
-    off = (np.arange(N_SMEAR) + 0.5) / N_SMEAR - 0.5      # within +/-0.45 px, so hs + px_mm > 0: no clip needed
+    # heights on the float origin can sit up to half a pixel below 0 (|round(gap_row) - gap_row| <= 0.5 px)
+    assert h.min() > -0.5 * px_mm - 1e-9
+    off = (np.arange(N_SMEAR) + 0.5) / N_SMEAR - 0.5      # within +/-0.45 px, so hs + px_mm > 0.05 px: no clip
     hs = (h[:, None] + off[None, :] * px_mm).ravel()
     x = np.log10(hs + px_mm)
     xe = np.log10(h + px_mm)
@@ -211,11 +213,32 @@ def main():
     E["mm_per_px"] = 1.0 / E["recording"].map(pxmm)
     assert E["mm_per_px"].notna().all()
 
-    # per-frame tip heights for the observability share (cut + 1.8 mm reached by the old arc's tip)
-    tips = {}
+    # Origin. restrikes.csv and tip_cycles measure heights from round(gap_row) (tip_restrike_check.load_tip); the
+    # per-frame files (data_package/frames, the Alex package) use the float gap_row. Re-reference every height to the
+    # float origin, offset = (round(gap_row) - gap_row) / px_per_mm, as export_for_alex.py does.
+    meta = {p.parent.name: json.loads(p.read_text(encoding="utf-8"))["calibration"]
+            for p in (root / "runs_annotated").rglob("run_metadata.json")}
+    off = {}
     for rec in E.recording.unique():
-        f = pd.read_csv(root / "data_package" / "frames" / f"{rec}.csv", usecols=["tip_height_above_gap_mm"])
+        cal = meta[rec]
+        assert np.isclose(float(cal["px_per_mm"]), pxmm[rec], rtol=0, atol=1e-4), rec
+        off[rec] = (round(float(cal["gap_row"])) - float(cal["gap_row"])) / float(cal["px_per_mm"])
+    o = E["recording"].map(off)
+    for c in ("restrike_height_mm", "old_arc_tip_height_mm", "glide_max_tip_mm"):
+        E[c] = E[c] - o
+    say(f"origin offset per recording {min(off.values()):+.4f} .. {max(off.values()):+.4f} mm, applied to heights")
+
+    # per-frame tip heights for the observability share (cut + 1.8 mm reached by the old arc's tip), and the
+    # anchor: each re-strike height must equal the per-frame tip height at its frame (5 significant figures)
+    tips, dmax = {}, 0.0
+    for rec, grp in E.groupby("recording"):
+        f = pd.read_csv(root / "data_package" / "frames" / f"{rec}.csv", usecols=["frame", "tip_height_above_gap_mm"])
+        y = f.set_index("frame").loc[grp["frame"], "tip_height_above_gap_mm"].to_numpy(float)
+        dmax = max(dmax, float(np.nanmax(np.abs(grp["restrike_height_mm"].to_numpy() - y))))
         tips[rec] = f["tip_height_above_gap_mm"].dropna().to_numpy()
+    say(f"ANCHOR re-strike height vs per-frame tip height at the same frame: max |diff| {dmax:.2e} mm")
+    assert dmax < 1e-3, "re-strike heights are not on the per-frame origin"
+    assert E["restrike_height_mm"].min() > -0.1
     say(f"per-frame tip series read: {len(tips)}; tip frames {sum(len(v) for v in tips.values())}")
 
     # ---------------- valleys ----------------
